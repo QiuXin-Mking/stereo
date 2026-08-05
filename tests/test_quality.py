@@ -94,5 +94,6 @@ def test_macos_camera_open_failure_includes_permission_path(monkeypatch):
             return None
 
     monkeypatch.setattr(capture_module.cv2, "VideoCapture", lambda *_args: ClosedCapture())
+    monkeypatch.setattr(capture_module.sys, "platform", "darwin")
     with pytest.raises(RuntimeError, match="隐私与安全性.*相机"):
         open_highest_camera(0)
