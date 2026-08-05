@@ -1,4 +1,5 @@
 import json
+import time
 
 import numpy as np
 
@@ -76,3 +77,24 @@ def test_stop_changes_state_without_starting_worker(tmp_path):
     assert engine.action("stop")["ok"]
 
     assert engine.status_snapshot()["state"] == "stopped"
+
+
+def test_manual_capture_saves_next_frame_without_accepting_it(tmp_path):
+    camera = FakeCamera()
+    engine = HeadlessCalibrationEngine(make_config(), tmp_path, 0.020, "/dev/video0", camera=camera)
+    engine.start()
+
+    response = engine.action("manual_capture")
+    deadline = time.monotonic() + 3.0
+    while engine.status_snapshot().get("manual_pairs", 0) < 1 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    engine.action("stop")
+    engine.join(timeout=2)
+
+    assert response == {"ok": True}
+    assert engine.status_snapshot()["manual_pairs"] == 1
+    assert engine.status_snapshot()["accepted_pairs"] == 0
+    assert (tmp_path / "manual" / "0000_sbs.jpg").stat().st_size > 0
+    assert (tmp_path / "manual" / "0000_left.png").stat().st_size > 0
+    assert (tmp_path / "manual" / "0000_right.png").stat().st_size > 0
+    assert camera.released

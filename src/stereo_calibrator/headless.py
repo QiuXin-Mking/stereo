@@ -43,6 +43,7 @@ class HeadlessCalibrationEngine:
         self._solve_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._accepted: List[AcceptedPair] = []
+        self._manual_requests = 0
         self._preview = self._placeholder_preview()
         self._status: Dict[str, object] = {
             "state": "starting",
@@ -50,6 +51,7 @@ class HeadlessCalibrationEngine:
             "mode": "MJPG 3840x1080@30",
             "per_eye": "1920x1080",
             "accepted_pairs": 0,
+            "manual_pairs": 0,
             "target_pairs": int(config["capture"]["target_pairs"]),
             "reason": "等待启动",
             "stable_progress": 0.0,
@@ -100,10 +102,15 @@ class HeadlessCalibrationEngine:
             return bytes(self._preview)
 
     def action(self, name: str) -> Dict[str, object]:
-        if name not in {"pause", "resume", "undo", "solve", "stop"}:
+        if name not in {"pause", "resume", "undo", "solve", "stop", "manual_capture"}:
             return {"ok": False, "error": "不支持的操作"}
         with self._lock:
             state = str(self._status["state"])
+            if name == "manual_capture":
+                if state != "capturing":
+                    return {"ok": False, "error": "当前状态不能手动拍摄"}
+                self._manual_requests += 1
+                return {"ok": True}
             if name == "pause":
                 if state in {"solving", "pass", "retake", "error", "stopped"}:
                     return {"ok": False, "error": "当前状态不能暂停"}
@@ -158,6 +165,12 @@ class HeadlessCalibrationEngine:
                         f"采集帧尺寸变化：期望 3840x1080，实际 {frame.shape[1]}x{frame.shape[0]}"
                     )
                 left, right = split_sbs(frame, bool(self.config["device"].get("swap_eyes", False)))
+                with self._lock:
+                    manual_requested = self._manual_requests > 0
+                    if manual_requested:
+                        self._manual_requests -= 1
+                if manual_requested:
+                    self._save_manual_snapshot(frame, left, right)
                 left_gray = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)
                 right_gray = cv2.cvtColor(right, cv2.COLOR_BGR2GRAY)
                 left_corners = detect_chessboard(left_gray, pattern)
@@ -242,6 +255,27 @@ class HeadlessCalibrationEngine:
         )
         with self._lock:
             self._accepted.append(pair)
+
+    def _save_manual_snapshot(self, frame, left, right) -> None:
+        manual_dir = self.session_dir / "manual"
+        manual_dir.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            index = int(self._status["manual_pairs"])
+        paths = (
+            manual_dir / f"{index:04d}_sbs.jpg",
+            manual_dir / f"{index:04d}_left.png",
+            manual_dir / f"{index:04d}_right.png",
+        )
+        if not all(
+            (
+                cv2.imwrite(str(paths[0]), frame),
+                cv2.imwrite(str(paths[1]), left),
+                cv2.imwrite(str(paths[2]), right),
+            )
+        ):
+            raise RuntimeError("写入手动采集图像失败")
+        with self._lock:
+            self._status.update(manual_pairs=index + 1, reason=f"已手动保存第 {index + 1} 对素材")
 
     def _update_preview(self, left, right, left_corners, right_corners, pattern) -> None:
         left_view = left.copy()
