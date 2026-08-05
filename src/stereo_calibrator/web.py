@@ -39,7 +39,7 @@ HTML_PAGE = """<!doctype html>
     <div class="card">采集进度<b id="count">0 / 32</b></div>
   </div>
   <div id="guidance">等待状态...</div>
-  <img id="preview" src="/stream.mjpg" alt="双目实时预览">
+  <img id="preview" alt="双目实时预览">
   <div class="card"><span id="reason">等待棋盘</span><progress id="stable" max="1" value="0"></progress></div>
   <div class="metrics">
     <div class="card">左 RMS<b id="rmsL">-</b></div>
@@ -71,7 +71,11 @@ async function act(action) {
   const response=await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});
   const data=await response.json(); message.textContent=data.ok ? `操作成功: ${action}` : data.error; refresh();
 }
-refresh(); setInterval(refresh,1000);
+window.addEventListener('load', () => {
+  document.getElementById('preview').src='/stream.mjpg';
+  refresh();
+  setInterval(refresh,1000);
+});
 </script></body></html>"""
 
 

@@ -68,6 +68,7 @@ def test_home_page_contains_preview_and_controls(running_server):
     html = urlopen(base_url + "/", timeout=2).read().decode("utf-8")
 
     assert "/stream.mjpg" in html
+    assert '<img id="preview" src="/stream.mjpg"' not in html
     assert "开始求解" in html
     assert "暂停" in html
 
