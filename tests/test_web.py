@@ -16,6 +16,7 @@ class FakeEngine:
         return {
             "state": "capturing",
             "accepted_pairs": 0,
+            "manual_pairs": 0,
             "target_pairs": 32,
             "mode": "MJPG 3840x1080@30",
             "per_eye": "1920x1080",
@@ -34,7 +35,7 @@ class FakeEngine:
 
     def action(self, name):
         self.actions.append(name)
-        if name not in {"pause", "resume", "undo", "solve", "stop"}:
+        if name not in {"pause", "resume", "undo", "solve", "stop", "manual_capture"}:
             return {"ok": False, "error": "不支持的操作"}
         return {"ok": True}
 
@@ -71,6 +72,9 @@ def test_home_page_contains_preview_and_controls(running_server):
     assert '<img id="preview" src="/stream.mjpg"' not in html
     assert "开始求解" in html
     assert "暂停" in html
+    assert "手动拍摄" in html
+    assert "act('manual_capture')" in html
+    assert 'id="manualCount"' in html
 
 
 def test_status_endpoint_returns_engine_snapshot(running_server):
@@ -89,6 +93,15 @@ def test_valid_action_reaches_engine(running_server):
 
     assert payload == {"ok": True}
     assert engine.actions == ["pause"]
+
+
+def test_manual_capture_action_reaches_engine(running_server):
+    engine, base_url = running_server
+
+    payload = json.load(post_json(base_url + "/api/action", {"action": "manual_capture"}))
+
+    assert payload == {"ok": True}
+    assert engine.actions == ["manual_capture"]
 
 
 def test_action_endpoint_rejects_unknown_action(running_server):
