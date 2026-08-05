@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import stereo_calibrator.cli as cli
 from stereo_calibrator.cli import main
 
 
@@ -45,3 +46,35 @@ def test_web_dry_run_prints_rk_mode(tmp_path, capsys):
     assert "MJPG 3840x1080@30" in output
     assert "http://0.0.0.0:8765" in output
     assert list(Path(tmp_path).iterdir()) == []
+
+
+def test_backup_previous_web_session_copies_latest_manual_session(tmp_path):
+    sessions = tmp_path / "sessions"
+    backups = tmp_path / "backups"
+    (sessions / "20260805_100000" / "manual").mkdir(parents=True)
+    latest_manual = sessions / "20260805_110000" / "manual"
+    latest_manual.mkdir(parents=True)
+    (latest_manual / "0000_sbs.jpg").write_bytes(b"latest-frame")
+
+    result = cli.backup_previous_web_session(sessions, backups)
+
+    assert result == backups / "20260805_110000"
+    assert (result / "manual" / "0000_sbs.jpg").read_bytes() == b"latest-frame"
+    assert (latest_manual / "0000_sbs.jpg").read_bytes() == b"latest-frame"
+
+
+def test_backup_previous_web_session_never_overwrites_existing_backup(tmp_path):
+    sessions = tmp_path / "sessions"
+    backups = tmp_path / "backups"
+    manual = sessions / "20260805_110000" / "manual"
+    manual.mkdir(parents=True)
+    (manual / "0000_sbs.jpg").write_bytes(b"new-data")
+    existing = backups / "20260805_110000"
+    existing.mkdir(parents=True)
+    (existing / "sentinel.txt").write_bytes(b"keep")
+
+    result = cli.backup_previous_web_session(sessions, backups)
+
+    assert result is None
+    assert (existing / "sentinel.txt").read_bytes() == b"keep"
+    assert not (existing / "manual").exists()

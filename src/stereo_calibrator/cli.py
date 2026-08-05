@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 from pathlib import Path
+import shutil
 import sys
 from typing import List, Optional
 
@@ -15,6 +16,25 @@ from .solver import solve_stereo
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "default.yaml"
+
+
+def backup_previous_web_session(session_root: Path, backup_root: Path) -> Optional[Path]:
+    session_root = Path(session_root)
+    backup_root = Path(backup_root)
+    if not session_root.is_dir():
+        return None
+    candidates = sorted(
+        path for path in session_root.iterdir() if path.is_dir() and (path / "manual").is_dir()
+    )
+    if not candidates:
+        return None
+    source = candidates[-1]
+    destination = backup_root / source.name
+    if destination.exists():
+        return None
+    backup_root.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, destination)
+    return destination
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -105,6 +125,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.dry_run:
         print("DRY RUN：不会打开相机，也不会创建 session。")
         return 0
+
+    if args.web:
+        backup_dir = backup_previous_web_session(args.session_root, PROJECT_ROOT / "backups")
+        if backup_dir is not None:
+            print(f"上一轮素材已备份: {backup_dir}")
 
     session_dir = args.session_root / datetime.now().strftime("%Y%m%d_%H%M%S")
     session_dir.mkdir(parents=True, exist_ok=False)
