@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -x "$PROJECT_DIR/.venv/bin/python" ]; then
+  PYTHON_BIN="$PROJECT_DIR/.venv/bin/python"
+else
+  PYTHON_BIN=python3
+fi
+PYTHONPATH="$PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON_BIN" -m stereo_calibrator.cli "$@"

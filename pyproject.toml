@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stereo-chessboard-calibrator"
+version = "0.1.0"
+description = "Guided SBS stereo chessboard calibration for OpenCV"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy>=1.24",
+  "opencv-python>=4.8",
+  "PyYAML>=6.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

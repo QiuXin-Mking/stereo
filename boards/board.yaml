@@ -1,0 +1,11 @@
+target_type: chessboard
+inner_corners:
+  columns: 9
+  rows: 6
+squares:
+  columns: 10
+  rows: 7
+nominal_square_size_mm: 20.0
+page: A4-landscape
+print_scale: 100-percent
+

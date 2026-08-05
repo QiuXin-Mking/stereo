@@ -1,0 +1,24 @@
+device:
+  name: "UVC Camera 1"
+  probe_indices: 10
+  swap_eyes: false
+board:
+  columns: 9
+  rows: 6
+capture:
+  target_pairs: 32
+  minimum_pairs: 20
+  maximum_pairs: 40
+  stable_seconds: 0.8
+  preview_width_per_eye: 720
+quality:
+  minimum_sharpness: 80.0
+  maximum_clipped_ratio: 0.08
+  minimum_edge_margin_ratio: 0.025
+  minimum_novelty: 0.12
+validation:
+  maximum_mono_rms: 0.7
+  maximum_epipolar_median: 0.35
+  maximum_epipolar_p95: 1.0
+  maximum_outlier_fraction: 0.2
+
