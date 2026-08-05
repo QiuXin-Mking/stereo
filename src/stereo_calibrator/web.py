@@ -37,7 +37,6 @@ HTML_PAGE = """<!doctype html>
     <div class="card">设备模式<b id="mode">-</b></div>
     <div class="card">单眼分辨率<b id="perEye">-</b></div>
     <div class="card">采集进度<b id="count">0 / 32</b></div>
-    <div class="card">手动素材<b id="manualCount">0 / 32</b></div>
   </div>
   <div id="guidance">等待状态...</div>
   <img id="preview" alt="双目实时预览">
@@ -64,8 +63,7 @@ async function refresh() {
   try {
     const s = await (await fetch('/api/status', {cache:'no-store'})).json();
     state.textContent=s.state; state.className=(s.state==='pass'?'pass':(s.state==='error'||s.state==='retake'?'error':''));
-    mode.textContent=s.mode; perEye.textContent=s.per_eye; count.textContent=`${s.accepted_pairs} / ${s.target_pairs}`;
-    manualCount.textContent=`${s.manual_pairs} / ${s.target_pairs}`;
+    mode.textContent=s.mode; perEye.textContent=s.per_eye; count.textContent=`${s.manual_pairs} / ${s.target_pairs}`;
     guidance.textContent=s.guidance; reason.textContent=s.error || s.reason; stable.value=s.stable_progress;
     rmsL.textContent=show(s.mono_rms_left); rmsR.textContent=show(s.mono_rms_right); epi.textContent=show(s.epipolar_p95); result.textContent=show(s.result_dir);
   } catch(e) { message.textContent='状态连接失败: '+e; }

@@ -74,7 +74,9 @@ def test_home_page_contains_preview_and_controls(running_server):
     assert "暂停" in html
     assert "手动拍摄" in html
     assert "act('manual_capture')" in html
-    assert 'id="manualCount"' in html
+    assert "手动素材" not in html
+    assert 'id="manualCount"' not in html
+    assert "s.manual_pairs" in html
 
 
 def test_status_endpoint_returns_engine_snapshot(running_server):
