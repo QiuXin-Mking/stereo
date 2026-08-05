@@ -42,6 +42,10 @@ python3 -m venv --system-site-packages .venv
 http://<RK3588-IP>:8765/
 ```
 
+![RK3588 Web 标定界面](docs/images/rk3588-web-ui.png)
+
+页面显示设备模式、单眼分辨率、采集进度、下一组姿态提示、实时双目预览和操作按钮。
+
 若浏览器不能直接访问局域网地址，可建立 SSH 隧道：
 
 ```bash
