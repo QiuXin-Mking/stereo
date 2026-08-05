@@ -10,7 +10,6 @@ import cv2
 import numpy as np
 
 from .camera_backend import CameraMode, open_linux_camera
-from .capture import guidance_hint
 from .detector import detect_chessboard
 from .exporter import export_result
 from .models import AcceptedPair, PoseFeatures
@@ -20,6 +19,47 @@ from .solver import solve_stereo
 
 
 RK3588_MODE = CameraMode(3840, 1080, 30.0, "MJPG")
+
+
+def manual_guidance(completed: int, target: int = 32) -> str:
+    if completed >= target:
+        return f"本轮 {target} 组采集完成"
+    poses = (
+        "棋盘放在中央并正对相机",
+        "棋盘放在中央并正对相机",
+        "将棋盘移到左侧",
+        "将棋盘移到左侧",
+        "将棋盘移到右侧",
+        "将棋盘移到右侧",
+        "将棋盘移到上方",
+        "将棋盘移到上方",
+        "将棋盘移到下方",
+        "将棋盘移到下方",
+        "将棋盘移到左上角",
+        "将棋盘移到左上角",
+        "将棋盘移到右上角",
+        "将棋盘移到右上角",
+        "将棋盘移到左下角",
+        "将棋盘移到左下角",
+        "将棋盘移到右下角",
+        "将棋盘移到右下角",
+        "棋盘向左偏航",
+        "棋盘向左偏航",
+        "棋盘向右偏航",
+        "棋盘向右偏航",
+        "棋盘向上俯仰",
+        "棋盘向上俯仰",
+        "棋盘向下俯仰",
+        "棋盘向下俯仰",
+        "棋盘顺时针旋转",
+        "棋盘顺时针旋转",
+        "棋盘逆时针旋转",
+        "棋盘逆时针旋转",
+        "将棋盘靠近相机",
+        "将棋盘远离相机",
+    )
+    index = min(max(int(completed), 0), len(poses) - 1)
+    return f"第 {index + 1}/{target} 组：{poses[index]}"
 
 
 class HeadlessCalibrationEngine:
@@ -55,7 +95,7 @@ class HeadlessCalibrationEngine:
             "target_pairs": int(config["capture"]["target_pairs"]),
             "reason": "等待启动",
             "stable_progress": 0.0,
-            "guidance": "将棋盘完整放入左右画面",
+            "guidance": manual_guidance(0, int(config["capture"]["target_pairs"])),
             "mono_rms_left": None,
             "mono_rms_right": None,
             "epipolar_p95": None,
@@ -109,6 +149,9 @@ class HeadlessCalibrationEngine:
             if name == "manual_capture":
                 if state != "capturing":
                     return {"ok": False, "error": "当前状态不能手动拍摄"}
+                target = int(self._status["target_pairs"])
+                if int(self._status["manual_pairs"]) + self._manual_requests >= target:
+                    return {"ok": False, "error": f"本轮 {target} 组已采集完成"}
                 self._manual_requests += 1
                 return {"ok": True}
             if name == "pause":
@@ -204,12 +247,13 @@ class HeadlessCalibrationEngine:
 
                 self._update_preview(left, right, left_corners, right_corners, pattern)
                 with self._lock:
+                    manual_pairs = int(self._status["manual_pairs"])
                     self._status.update(
                         state="capturing",
                         accepted_pairs=len(self._accepted),
-                        reason=decision.reason,
+                        reason="本轮采集完成" if manual_pairs >= target else decision.reason,
                         stable_progress=stable_progress,
-                        guidance=guidance_hint(history),
+                        guidance=manual_guidance(manual_pairs, target),
                     )
         except Exception as error:
             with self._lock:
@@ -275,7 +319,13 @@ class HeadlessCalibrationEngine:
         ):
             raise RuntimeError("写入手动采集图像失败")
         with self._lock:
-            self._status.update(manual_pairs=index + 1, reason=f"已手动保存第 {index + 1} 对素材")
+            completed = index + 1
+            target = int(self._status["target_pairs"])
+            self._status.update(
+                manual_pairs=completed,
+                guidance=manual_guidance(completed, target),
+                reason="本轮采集完成" if completed >= target else f"已保存第 {completed} 组",
+            )
 
     def _update_preview(self, left, right, left_corners, right_corners, pattern) -> None:
         left_view = left.copy()

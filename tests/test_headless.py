@@ -3,6 +3,7 @@ import time
 
 import numpy as np
 
+import stereo_calibrator.headless as headless
 from stereo_calibrator.headless import HeadlessCalibrationEngine
 
 
@@ -98,3 +99,26 @@ def test_manual_capture_saves_next_frame_without_accepting_it(tmp_path):
     assert (tmp_path / "manual" / "0000_left.png").stat().st_size > 0
     assert (tmp_path / "manual" / "0000_right.png").stat().st_size > 0
     assert camera.released
+
+
+def test_manual_guidance_advances_through_fixed_capture_sequence():
+    assert headless.manual_guidance(0) == "第 1/32 组：棋盘放在中央并正对相机"
+    assert headless.manual_guidance(2) == "第 3/32 组：将棋盘移到左侧"
+    assert headless.manual_guidance(10) == "第 11/32 组：将棋盘移到左上角"
+    assert headless.manual_guidance(30) == "第 31/32 组：将棋盘靠近相机"
+    assert headless.manual_guidance(32) == "本轮 32 组采集完成"
+
+
+def test_manual_capture_rejects_after_target(tmp_path):
+    engine = HeadlessCalibrationEngine(make_config(), tmp_path, 0.020, "/dev/video0", camera=FakeCamera())
+    engine._status.update(state="capturing", manual_pairs=32)
+
+    assert engine.action("manual_capture") == {"ok": False, "error": "本轮 32 组已采集完成"}
+
+
+def test_manual_capture_does_not_queue_beyond_target(tmp_path):
+    engine = HeadlessCalibrationEngine(make_config(), tmp_path, 0.020, "/dev/video0", camera=FakeCamera())
+    engine._status.update(state="capturing", manual_pairs=31)
+
+    assert engine.action("manual_capture") == {"ok": True}
+    assert engine.action("manual_capture") == {"ok": False, "error": "本轮 32 组已采集完成"}
