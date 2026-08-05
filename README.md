@@ -59,10 +59,34 @@ examples/cpp/build/load_calibration \
 
 输出 `rectified_cpp.png`。
 
+## RK3588 无界面模式
+
+RK3588 通过 `/dev/video0` 严格使用 MJPEG `3840×1080@30 FPS`，不允许静默降级。启动：
+
+```bash
+./calibrate --web --device /dev/video0 --host 0.0.0.0 --port 8765 --square-mm 20.00
+```
+
+然后在同一局域网访问：
+
+```text
+http://192.168.100.200:8765
+```
+
+页面显示双眼实时预览、棋盘检测、质量拒绝原因、稳定倒计时和结果指标，并提供暂停、继续、撤销、求解和停止按钮。完整 3840×1080 原始帧只保存在 RK3588；浏览器接收缩小后的预览。
+
+远端首次环境准备不覆盖系统 OpenCV：
+
+```bash
+python3 -m venv --system-site-packages .venv
+.venv/bin/python -m pip install PyYAML pytest
+```
+
+该页面未实现登录认证，只应在可信局域网临时运行；标定完成后点击“停止服务”或按 `Ctrl-C`。
+
 ## macOS 常见问题
 
 - 找不到/打不开相机：到“系统设置 → 隐私与安全性 → 相机”，允许 Terminal 或 Codex 访问。
 - 索引变化：优先按名称解析；必要时重新运行 FFmpeg 枚举并传 `--device-index`。
 - 左右反了：添加 `--swap-eyes` 重新采集。
 - 长期检测不到：确认是 9×6 内角点、棋盘完整出现在左右眼、无反光且打印纸保持平整。
-

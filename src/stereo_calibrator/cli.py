@@ -20,6 +20,7 @@ DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "default.yaml"
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         add_help=False,
+        allow_abbrev=False,
         description="UVC Camera 1 的 SBS 双目棋盘格引导标定",
     )
     parser.add_argument("-h", "--help", action="store_true", help="显示帮助")
@@ -29,6 +30,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--capture-height", type=int, help="完整 SBS 原生高度覆盖值")
     parser.add_argument("--square-mm", type=float, help="打印后实测的单个方格边长，单位 mm")
     parser.add_argument("--swap-eyes", action="store_true", help="交换 SBS 左右半幅")
+    parser.add_argument("--web", action="store_true", help="启动 RK3588 无界面浏览器控制台")
+    parser.add_argument("--device", default="/dev/video0", help="Linux V4L2 图像节点")
+    parser.add_argument("--host", default="0.0.0.0", help="Web 监听地址")
+    parser.add_argument("--port", type=int, default=8765, help="Web 监听端口")
     parser.add_argument("--target", type=int, default=32, help="目标自动接收图像对数，默认 32")
     parser.add_argument(
         "--session-root", type=Path, default=PROJECT_ROOT / "sessions", help="session 输出根目录"
@@ -56,6 +61,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     if args.target < 20 or args.target > 40:
         print("错误：目标采集数量必须在 20 到 40 之间", file=sys.stderr)
+        return 2
+    if args.port < 1 or args.port > 65535:
+        print("错误：端口必须在 1 到 65535 之间", file=sys.stderr)
         return 2
 
     config = yaml.safe_load(DEFAULT_CONFIG.read_text(encoding="utf-8"))
@@ -91,6 +99,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         f"设备={args.device_name}  棋盘={config['board']['columns']}x{config['board']['rows']}  "
         f"方格={square_mm:.3f} mm  目标={args.target} 对"
     )
+    if args.web:
+        print(f"RK3588 模式=MJPG 3840x1080@30  设备={args.device}")
+        print(f"Web 地址=http://{args.host}:{args.port}")
     if args.dry_run:
         print("DRY RUN：不会打开相机，也不会创建 session。")
         return 0
@@ -102,6 +113,33 @@ def main(argv: Optional[List[str]] = None) -> int:
     (session_dir / "session.yaml").write_text(
         yaml.safe_dump(resolved, allow_unicode=True, sort_keys=False), encoding="utf-8"
     )
+    if args.web:
+        from .headless import HeadlessCalibrationEngine
+        from .web import create_server
+
+        engine = HeadlessCalibrationEngine(
+            config,
+            session_dir,
+            square_size_m=square_mm / 1000.0,
+            device=args.device,
+        )
+        server = None
+        try:
+            engine.start()
+            server = create_server(engine, args.host, args.port)
+            print(f"浏览器访问: http://{args.host}:{args.port}")
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("收到 Ctrl-C，正在停止服务...")
+        except (RuntimeError, OSError, ValueError) as error:
+            print(f"失败：{error}", file=sys.stderr)
+            return 1
+        finally:
+            engine.action("stop")
+            engine.join(timeout=5)
+            if server is not None:
+                server.server_close()
+        return 1 if engine.status_snapshot()["state"] == "error" else 0
     try:
         pairs = capture_session(
             config,
@@ -140,4 +178,3 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

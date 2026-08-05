@@ -24,3 +24,24 @@ def test_cli_dry_run_creates_no_session(tmp_path, capsys):
     assert "9x6" in output
     assert "20.050 mm" in output
     assert list(Path(tmp_path).iterdir()) == []
+
+
+def test_web_dry_run_prints_rk_mode(tmp_path, capsys):
+    code = main(
+        [
+            "--web",
+            "--device",
+            "/dev/video0",
+            "--square-mm",
+            "20",
+            "--session-root",
+            str(tmp_path),
+            "--dry-run",
+        ]
+    )
+
+    assert code == 0
+    output = capsys.readouterr().out
+    assert "MJPG 3840x1080@30" in output
+    assert "http://0.0.0.0:8765" in output
+    assert list(Path(tmp_path).iterdir()) == []
