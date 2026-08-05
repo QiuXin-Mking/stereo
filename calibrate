@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-if [ -x "$PROJECT_DIR/.venv/bin/python" ]; then
+if [ -x "$PROJECT_DIR/.venv/bin/python" ] && "$PROJECT_DIR/.venv/bin/python" -c 'import cv2, numpy' >/dev/null 2>&1; then
   PYTHON_BIN="$PROJECT_DIR/.venv/bin/python"
 else
   PYTHON_BIN=python3
