@@ -6,4 +6,8 @@ if [ -x "$PROJECT_DIR/.venv/bin/python" ]; then
 else
   PYTHON_BIN=python3
 fi
-PYTHONPATH="$PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON_BIN" -m stereo_calibrator.cli "$@"
+CALIBRATOR_PYTHONPATH="$PROJECT_DIR/src"
+if [ -d "$PROJECT_DIR/.remote-deps" ]; then
+  CALIBRATOR_PYTHONPATH="$PROJECT_DIR/.remote-deps:$CALIBRATOR_PYTHONPATH"
+fi
+PYTHONPATH="$CALIBRATOR_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON_BIN" -m stereo_calibrator.cli "$@"
