@@ -83,6 +83,8 @@ def test_home_page_contains_preview_and_controls(running_server):
     assert 'id="codeBand"' in html
     assert "s.camera_label" in html
     assert "s.code_band" in html
+    assert "停止服务" not in html
+    assert "act('stop')" not in html
 
 
 def test_status_endpoint_returns_engine_snapshot(running_server):

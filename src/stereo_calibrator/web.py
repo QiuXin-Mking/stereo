@@ -55,7 +55,6 @@ HTML_PAGE = """<!doctype html>
     <button onclick="act('resume')">继续</button>
     <button onclick="act('undo')">撤销上一对</button>
     <button onclick="act('solve')">开始求解</button>
-    <button class="danger" onclick="act('stop')">停止服务</button>
   </div>
   <div id="message"></div>
 </main>
