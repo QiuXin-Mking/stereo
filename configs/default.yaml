@@ -3,8 +3,8 @@ device:
   probe_indices: 10
   swap_eyes: false
 board:
-  columns: 9
-  rows: 6
+  columns: 8
+  rows: 5
 capture:
   target_pairs: 32
   minimum_pairs: 20
@@ -21,4 +21,3 @@ validation:
   maximum_epipolar_median: 0.35
   maximum_epipolar_p95: 1.0
   maximum_outlier_fraction: 0.2
-

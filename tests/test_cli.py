@@ -22,7 +22,7 @@ def test_cli_dry_run_creates_no_session(tmp_path, capsys):
     assert main(["--square-mm", "20.05", "--session-root", str(tmp_path), "--dry-run"]) == 0
 
     output = capsys.readouterr().out
-    assert "9x6" in output
+    assert "8x5" in output
     assert "20.050 mm" in output
     assert list(Path(tmp_path).iterdir()) == []
 

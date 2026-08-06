@@ -96,6 +96,7 @@ class HeadlessCalibrationEngine:
         self._accepted: List[AcceptedPair] = []
         self._manual_requests = 0
         self._preview = self._placeholder_preview()
+        existing_manual = len(self._manual_pair_paths())
         self._status: Dict[str, object] = {
             "state": "starting",
             "device": device,
@@ -104,11 +105,13 @@ class HeadlessCalibrationEngine:
             "per_eye": "探测中",
             "code_band": "探测中",
             "accepted_pairs": 0,
-            "manual_pairs": 0,
+            "manual_pairs": existing_manual,
             "target_pairs": int(config["capture"]["target_pairs"]),
             "reason": "等待启动",
             "stable_progress": 0.0,
-            "guidance": manual_guidance(0, int(config["capture"]["target_pairs"])),
+            "guidance": manual_guidance(
+                existing_manual, int(config["capture"]["target_pairs"])
+            ),
             "mono_rms_left": None,
             "mono_rms_right": None,
             "epipolar_p95": None,
@@ -191,7 +194,8 @@ class HeadlessCalibrationEngine:
                 return {"ok": True}
             if name == "solve":
                 minimum = int(self.config["capture"]["minimum_pairs"])
-                if len(self._accepted) < minimum:
+                saved_manual = len(self._manual_pair_paths())
+                if max(len(self._accepted), saved_manual) < minimum:
                     return {"ok": False, "error": f"至少需要 {minimum} 对图像"}
                 if state == "solving":
                     return {"ok": False, "error": "已经在求解"}
@@ -389,11 +393,84 @@ class HeadlessCalibrationEngine:
             with self._lock:
                 self._preview = encoded.tobytes()
 
+    def _manual_pair_paths(self):
+        manual_dir = self.session_dir / "manual"
+        pairs = []
+        for left_path in sorted(manual_dir.glob("*_left.png")):
+            right_path = manual_dir / left_path.name.replace("_left.png", "_right.png")
+            if right_path.exists():
+                pairs.append((left_path, right_path))
+        return pairs
+
+    def _load_manual_pairs(self, pattern):
+        pairs: List[AcceptedPair] = []
+        rejected: List[int] = []
+        manual_dir = self.session_dir / "manual"
+        for left_path, right_path in self._manual_pair_paths():
+            index = int(left_path.name.split("_", 1)[0])
+            left = cv2.imread(str(left_path), cv2.IMREAD_COLOR)
+            right = cv2.imread(str(right_path), cv2.IMREAD_COLOR)
+            if left is None or right is None or left.shape != right.shape:
+                rejected.append(index)
+                continue
+            left_gray = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)
+            right_gray = cv2.cvtColor(right, cv2.COLOR_BGR2GRAY)
+            left_corners = detect_chessboard(left_gray, pattern)
+            right_corners = detect_chessboard(right_gray, pattern)
+            if left_corners is None or right_corners is None:
+                rejected.append(index)
+                continue
+            decision = evaluate_pair(
+                left_gray,
+                right_gray,
+                left_corners,
+                right_corners,
+                [],
+                self.config["quality"],
+            )
+            if not decision.accepted or decision.features is None:
+                rejected.append(index)
+                continue
+            raw_path = manual_dir / f"{index:04d}_sbs.jpg"
+            pairs.append(
+                AcceptedPair(
+                    index=index,
+                    left_path=left_path,
+                    right_path=right_path,
+                    raw_path=raw_path if raw_path.exists() else None,
+                    left_corners=left_corners.copy(),
+                    right_corners=right_corners.copy(),
+                    image_size=(left.shape[1], left.shape[0]),
+                    features=decision.features,
+                    metrics=decision.metrics,
+                )
+            )
+        return pairs, rejected
+
     def _solve(self) -> None:
         with self._lock:
-            self._status.update(state="solving", reason="正在计算内外参", stable_progress=0.0)
+            self._status.update(state="solving", reason="正在检测手动样本角点", stable_progress=0.0)
             pairs = list(self._accepted)
         pattern = (int(self.config["board"]["columns"]), int(self.config["board"]["rows"]))
+        rejected = []
+        if len(pairs) < int(self.config["capture"]["minimum_pairs"]):
+            pairs, rejected = self._load_manual_pairs(pattern)
+        minimum = int(self.config["capture"]["minimum_pairs"])
+        if len(pairs) < minimum:
+            with self._lock:
+                self._status.update(
+                    state="retake",
+                    reason="有效样本不足，请补拍",
+                    accepted_pairs=len(pairs),
+                    error=(
+                        f"已检测 {len(self._manual_pair_paths())} 对，"
+                        f"有效 {len(pairs)} 对，至少需要 {minimum} 对；"
+                        f"不合格编号：{rejected}"
+                    ),
+                )
+            return
+        with self._lock:
+            self._status.update(accepted_pairs=len(pairs), reason="正在计算内外参")
         result = solve_stereo(pairs, pattern, self.square_size_m, self.config["validation"])
         output_name = "final" if result.passed else "diagnostic"
         output_dir = self.session_dir / "results" / output_name

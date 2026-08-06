@@ -5,6 +5,7 @@ import numpy as np
 
 import stereo_calibrator.headless as headless
 from stereo_calibrator.headless import HeadlessCalibrationEngine
+from stereo_calibrator.models import PoseFeatures, QualityDecision
 
 
 class FakeCamera:
@@ -57,6 +58,50 @@ def test_solve_is_rejected_below_twenty_pairs(tmp_path):
     response = engine.action("solve")
 
     assert response == {"ok": False, "error": "至少需要 20 对图像"}
+
+
+def test_solve_accepts_twenty_saved_manual_pairs(tmp_path):
+    manual = tmp_path / "manual"
+    manual.mkdir()
+    for index in range(20):
+        (manual / f"{index:04d}_left.png").touch()
+        (manual / f"{index:04d}_right.png").touch()
+    engine = HeadlessCalibrationEngine(make_config(), tmp_path, 0.020, "/dev/video0", camera=FakeCamera())
+
+    assert engine.action("solve") == {"ok": True}
+
+
+def test_existing_manual_pairs_are_restored_in_web_status(tmp_path):
+    manual = tmp_path / "manual"
+    manual.mkdir()
+    for index in range(20):
+        (manual / f"{index:04d}_left.png").touch()
+        (manual / f"{index:04d}_right.png").touch()
+
+    engine = HeadlessCalibrationEngine(make_config(), tmp_path, 0.020, "/dev/video0", camera=FakeCamera())
+
+    assert engine.status_snapshot()["manual_pairs"] == 20
+    assert engine.status_snapshot()["guidance"] == "第 21/32 组：棋盘向右偏航"
+
+
+def test_load_manual_pairs_detects_corners_and_skips_bad_pair(tmp_path, monkeypatch):
+    manual = tmp_path / "manual"
+    manual.mkdir()
+    image = np.full((120, 192, 3), 127, np.uint8)
+    for index in range(2):
+        headless.cv2.imwrite(str(manual / f"{index:04d}_left.png"), image)
+        headless.cv2.imwrite(str(manual / f"{index:04d}_right.png"), image)
+    corners = np.zeros((40, 2), np.float32)
+    detections = iter((corners, corners, None, corners))
+    monkeypatch.setattr(headless, "detect_chessboard", lambda *_args: next(detections))
+    decision = QualityDecision(True, "质量通过", {"sharpness": 100.0}, PoseFeatures(0.5, 0.5, 0.2))
+    monkeypatch.setattr(headless, "evaluate_pair", lambda *_args: decision)
+    engine = HeadlessCalibrationEngine(make_config(), tmp_path, 0.020, "/dev/video0", camera=FakeCamera())
+
+    pairs, rejected = engine._load_manual_pairs((8, 5))
+
+    assert [pair.index for pair in pairs] == [0]
+    assert rejected == [1]
 
 
 def test_pause_resume_and_invalid_action(tmp_path):
