@@ -26,6 +26,19 @@ class WorldCamera(FakeCamera):
         return True, frame
 
 
+class BurstCamera(FakeCamera):
+    def __init__(self):
+        super().__init__()
+        self.index = 0
+
+    def read(self):
+        self.index += 1
+        frame = np.full((1080, 3840, 3), 100, np.uint8)
+        if self.index % 5 == 0:
+            frame[:, ::8] = 255
+        return True, frame
+
+
 def make_config():
     return {
         "device": {"name": "RK camera"},
@@ -93,7 +106,11 @@ def test_load_manual_pairs_detects_corners_and_skips_bad_pair(tmp_path, monkeypa
         headless.cv2.imwrite(str(manual / f"{index:04d}_right.png"), image)
     corners = np.zeros((40, 2), np.float32)
     detections = iter((corners, corners, None, corners))
-    monkeypatch.setattr(headless, "detect_chessboard", lambda *_args: next(detections))
+    monkeypatch.setattr(
+        headless,
+        "detect_chessboard_with_retry",
+        lambda *_args: (next(detections), "raw"),
+    )
     decision = QualityDecision(True, "质量通过", {"sharpness": 100.0}, PoseFeatures(0.5, 0.5, 0.2))
     monkeypatch.setattr(headless, "evaluate_pair", lambda *_args: decision)
     engine = HeadlessCalibrationEngine(make_config(), tmp_path, 0.020, "/dev/video0", camera=FakeCamera())
@@ -112,6 +129,16 @@ def test_pause_resume_and_invalid_action(tmp_path):
     assert engine.action("resume")["ok"]
     assert engine.status_snapshot()["state"] == "capturing"
     assert engine.action("erase") == {"ok": False, "error": "不支持的操作"}
+
+
+def test_auto_capture_switch_defaults_on_and_can_be_toggled(tmp_path):
+    engine = HeadlessCalibrationEngine(make_config(), tmp_path, 0.020, "/dev/video0", camera=FakeCamera())
+
+    assert engine.status_snapshot()["auto_capture_enabled"] is True
+    assert engine.action("auto_off") == {"ok": True}
+    assert engine.status_snapshot()["auto_capture_enabled"] is False
+    assert engine.action("auto_on") == {"ok": True}
+    assert engine.status_snapshot()["auto_capture_enabled"] is True
 
 
 def test_status_snapshot_is_json_safe(tmp_path):
@@ -151,7 +178,29 @@ def test_manual_capture_saves_next_frame_without_accepting_it(tmp_path):
     assert (tmp_path / "manual" / "0000_sbs.jpg").stat().st_size > 0
     assert (tmp_path / "manual" / "0000_left.png").stat().st_size > 0
     assert (tmp_path / "manual" / "0000_right.png").stat().st_size > 0
+    metadata = json.loads((tmp_path / "manual" / "0000_metadata.json").read_text())
+    assert metadata["source"] == "manual"
+    assert metadata["corners_detected"] is False
+    assert metadata["sharpness"] >= 0
     assert camera.released
+
+
+def test_manual_capture_selects_sharpest_of_five_frames(tmp_path, monkeypatch):
+    camera = BurstCamera()
+    engine = HeadlessCalibrationEngine(make_config(), tmp_path, 0.020, "/dev/video0", camera=camera)
+    monkeypatch.setattr(headless, "detect_chessboard", lambda *_args: None)
+    engine.start()
+
+    assert engine.action("manual_capture") == {"ok": True}
+    deadline = time.monotonic() + 3.0
+    while engine.status_snapshot()["manual_pairs"] < 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    engine.action("stop")
+    engine.join(2)
+
+    saved = headless.cv2.imread(str(tmp_path / "manual" / "0000_left.png"))
+    assert saved is not None
+    assert saved.std() > 10
 
 
 def test_manual_guidance_advances_through_fixed_capture_sequence():

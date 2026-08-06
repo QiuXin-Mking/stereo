@@ -19,6 +19,18 @@ def detect_chessboard(gray: np.ndarray, pattern: Tuple[int, int]) -> Optional[np
     return corners.reshape(-1, 2).astype(np.float32)
 
 
+def detect_chessboard_with_retry(
+    gray: np.ndarray, pattern: Tuple[int, int]
+) -> Tuple[Optional[np.ndarray], str]:
+    """Detect on the original image, then retry once with CLAHE for low light."""
+    corners = detect_chessboard(gray, pattern)
+    if corners is not None:
+        return corners, "raw"
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    corners = detect_chessboard(clahe.apply(gray), pattern)
+    return (corners, "clahe") if corners is not None else (None, "none")
+
+
 def pose_features(corners: np.ndarray, image_size: Tuple[int, int]) -> PoseFeatures:
     """Summarize board location, projected area, and in-plane orientation."""
     points = np.asarray(corners, dtype=np.float32).reshape(-1, 2)
@@ -51,4 +63,3 @@ def pose_features(corners: np.ndarray, image_size: Tuple[int, int]) -> PoseFeatu
         angle_deg=angle,
         perspective=perspective,
     )
-

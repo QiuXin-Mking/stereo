@@ -38,7 +38,9 @@ HTML_PAGE = """<!doctype html>
     <div class="card">设备模式<b id="mode">-</b></div>
     <div class="card">单眼分辨率<b id="perEye">-</b></div>
     <div class="card">码带检测<b id="codeBand">探测中</b></div>
-    <div class="card">采集进度<b id="count">0 / 32</b></div>
+    <div class="card">已保存<b id="count">0 / 32</b></div>
+    <div class="card">检测有效<b id="validCount">0</b></div>
+    <div class="card">自动采集<b id="autoState">开启</b></div>
   </div>
   <div id="guidance">等待状态...</div>
   <img id="preview" alt="双目实时预览">
@@ -51,6 +53,8 @@ HTML_PAGE = """<!doctype html>
   </div>
   <div class="controls">
     <button onclick="act('manual_capture')">手动拍摄</button>
+    <button onclick="act('auto_on')">开启自动采集</button>
+    <button onclick="act('auto_off')">关闭自动采集</button>
     <button onclick="act('pause')">暂停</button>
     <button onclick="act('resume')">继续</button>
     <button onclick="act('undo')">撤销上一对</button>
@@ -65,7 +69,8 @@ async function refresh() {
     const s = await (await fetch('/api/status', {cache:'no-store'})).json();
     state.textContent=s.state; state.className=(s.state==='pass'?'pass':(s.state==='error'||s.state==='retake'?'error':''));
     cameraLabel.textContent=s.camera_label; mode.textContent=s.mode; perEye.textContent=s.per_eye;
-    codeBand.textContent=s.code_band; count.textContent=`${s.manual_pairs} / ${s.target_pairs}`;
+    codeBand.textContent=s.code_band; count.textContent=`${s.saved_pairs} / ${s.target_pairs}`;
+    validCount.textContent=s.detected_valid_pairs; autoState.textContent=s.auto_capture_enabled ? '开启' : '关闭';
     guidance.textContent=s.guidance; reason.textContent=s.error || s.reason; stable.value=s.stable_progress;
     rmsL.textContent=show(s.mono_rms_left); rmsR.textContent=show(s.mono_rms_right); epi.textContent=show(s.epipolar_p95); result.textContent=show(s.result_dir);
   } catch(e) { message.textContent='状态连接失败: '+e; }

@@ -19,6 +19,9 @@ class FakeEngine:
             "code_band": "通过（160 px）",
             "accepted_pairs": 0,
             "manual_pairs": 0,
+            "saved_pairs": 0,
+            "detected_valid_pairs": 0,
+            "auto_capture_enabled": True,
             "target_pairs": 32,
             "mode": "MJPG 3840x1080@30",
             "per_eye": "1920x1080",
@@ -37,7 +40,7 @@ class FakeEngine:
 
     def action(self, name):
         self.actions.append(name)
-        if name not in {"pause", "resume", "undo", "solve", "stop", "manual_capture"}:
+        if name not in {"pause", "resume", "undo", "solve", "stop", "manual_capture", "auto_on", "auto_off"}:
             return {"ok": False, "error": "不支持的操作"}
         return {"ok": True}
 
@@ -78,11 +81,15 @@ def test_home_page_contains_preview_and_controls(running_server):
     assert "act('manual_capture')" in html
     assert "手动素材" not in html
     assert 'id="manualCount"' not in html
-    assert "s.manual_pairs" in html
+    assert "s.manual_pairs" not in html
     assert 'id="cameraLabel"' in html
     assert 'id="codeBand"' in html
     assert "s.camera_label" in html
     assert "s.code_band" in html
+    assert "s.saved_pairs" in html
+    assert "s.detected_valid_pairs" in html
+    assert "auto_off" in html
+    assert "auto_on" in html
     assert "停止服务" not in html
     assert "act('stop')" not in html
 

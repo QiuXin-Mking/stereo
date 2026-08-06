@@ -15,9 +15,10 @@ from .camera_backend import (
     open_first_supported_linux_camera,
 )
 from .camera_profile import CameraProfile, detect_camera_profile, split_profile_frame
-from .detector import detect_chessboard
+from .detector import detect_chessboard, detect_chessboard_with_retry
 from .exporter import export_result
 from .models import AcceptedPair, PoseFeatures
+from .pose_slots import POSE_SLOT_QUOTAS, classify_pose_slot
 from .quality import evaluate_pair
 from .solver import solve_stereo
 
@@ -95,6 +96,8 @@ class HeadlessCalibrationEngine:
         self._thread: Optional[threading.Thread] = None
         self._accepted: List[AcceptedPair] = []
         self._manual_requests = 0
+        self._manual_burst = []
+        self._pose_slots = {name: 0 for name in POSE_SLOT_QUOTAS}
         self._preview = self._placeholder_preview()
         existing_manual = len(self._manual_pair_paths())
         self._status: Dict[str, object] = {
@@ -106,6 +109,10 @@ class HeadlessCalibrationEngine:
             "code_band": "探测中",
             "accepted_pairs": 0,
             "manual_pairs": existing_manual,
+            "saved_pairs": existing_manual,
+            "detected_valid_pairs": 0,
+            "auto_capture_enabled": True,
+            "pose_slots": dict(self._pose_slots),
             "target_pairs": int(config["capture"]["target_pairs"]),
             "reason": "等待启动",
             "stable_progress": 0.0,
@@ -161,10 +168,19 @@ class HeadlessCalibrationEngine:
             return bytes(self._preview)
 
     def action(self, name: str) -> Dict[str, object]:
-        if name not in {"pause", "resume", "undo", "solve", "stop", "manual_capture"}:
+        if name not in {
+            "pause", "resume", "undo", "solve", "stop", "manual_capture", "auto_on", "auto_off"
+        }:
             return {"ok": False, "error": "不支持的操作"}
         with self._lock:
             state = str(self._status["state"])
+            if name in {"auto_on", "auto_off"}:
+                enabled = name == "auto_on"
+                self._status.update(
+                    auto_capture_enabled=enabled,
+                    reason="自动采集已开启" if enabled else "自动采集已关闭",
+                )
+                return {"ok": True}
             if name == "manual_capture":
                 if state != "capturing":
                     return {"ok": False, "error": "当前状态不能手动拍摄"}
@@ -208,6 +224,7 @@ class HeadlessCalibrationEngine:
     def _run(self) -> None:
         candidate_since: Optional[float] = None
         candidate_feature: Optional[PoseFeatures] = None
+        candidate_slot: Optional[str] = None
         pattern = (int(self.config["board"]["columns"]), int(self.config["board"]["rows"]))
         stable_seconds = float(self.config["capture"]["stable_seconds"])
         target = int(self.config["capture"]["target_pairs"])
@@ -217,7 +234,7 @@ class HeadlessCalibrationEngine:
                 if state == "paused":
                     time.sleep(0.05)
                     continue
-                if self._solve_event.is_set() or len(self._accepted) >= target:
+                if self._solve_event.is_set():
                     self._solve()
                     return
                 ok, frame = self._camera.read()
@@ -256,10 +273,14 @@ class HeadlessCalibrationEngine:
                 )
                 with self._lock:
                     manual_requested = self._manual_requests > 0
-                    if manual_requested:
-                        self._manual_requests -= 1
                 if manual_requested:
-                    self._save_manual_snapshot(frame, left, right)
+                    self._manual_burst.append((frame.copy(), left.copy(), right.copy()))
+                    if len(self._manual_burst) >= 5:
+                        burst = self._manual_burst[:5]
+                        self._manual_burst.clear()
+                        self._save_manual_burst(burst, pattern)
+                        with self._lock:
+                            self._manual_requests -= 1
                 left_gray = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)
                 right_gray = cv2.cvtColor(right, cv2.COLOR_BGR2GRAY)
                 left_corners = detect_chessboard(left_gray, pattern)
@@ -275,21 +296,35 @@ class HeadlessCalibrationEngine:
                 )
                 now = time.monotonic()
                 stable_progress = 0.0
-                if decision.accepted and decision.features is not None:
-                    if candidate_feature is None or np.linalg.norm(
+                auto_enabled = bool(self.status_snapshot()["auto_capture_enabled"])
+                slot = None
+                if decision.accepted and left_corners is not None:
+                    slot = classify_pose_slot(
+                        left_corners,
+                        pattern,
+                        (left.shape[1], left.shape[0]),
+                        self._pose_slots,
+                    )
+                if auto_enabled and slot is not None and decision.features is not None:
+                    if candidate_slot != slot or candidate_feature is None or np.linalg.norm(
                         decision.features.as_array() - candidate_feature.as_array()
                     ) > 0.025:
                         candidate_feature = decision.features
                         candidate_since = now
+                        candidate_slot = slot
                     stable_progress = min(1.0, (now - float(candidate_since)) / stable_seconds)
                     if stable_progress >= 1.0:
-                        self._save_pair(frame, left, right, left_corners, right_corners, decision)
+                        self._save_pair(
+                            frame, left, right, left_corners, right_corners, decision, slot
+                        )
                         candidate_since = None
                         candidate_feature = None
+                        candidate_slot = None
                         stable_progress = 0.0
                 else:
                     candidate_since = None
                     candidate_feature = None
+                    candidate_slot = None
 
                 self._update_preview(left, right, left_corners, right_corners, pattern)
                 with self._lock:
@@ -308,15 +343,16 @@ class HeadlessCalibrationEngine:
             if self._camera is not None:
                 self._camera.release()
 
-    def _save_pair(self, frame, left, right, left_corners, right_corners, decision) -> None:
-        raw_dir = self.session_dir / "raw_sbs"
-        accepted_dir = self.session_dir / "accepted"
-        raw_dir.mkdir(parents=True, exist_ok=True)
-        accepted_dir.mkdir(parents=True, exist_ok=True)
-        index = len(self._accepted)
-        raw_path = raw_dir / f"{index:04d}_sbs.jpg"
-        left_path = accepted_dir / f"{index:04d}_left.png"
-        right_path = accepted_dir / f"{index:04d}_right.png"
+    def _save_pair(
+        self, frame, left, right, left_corners, right_corners, decision, slot: str
+    ) -> None:
+        manual_dir = self.session_dir / "manual"
+        manual_dir.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            index = int(self._status["manual_pairs"])
+        raw_path = manual_dir / f"{index:04d}_sbs.jpg"
+        left_path = manual_dir / f"{index:04d}_left.png"
+        right_path = manual_dir / f"{index:04d}_right.png"
         if not all(
             (cv2.imwrite(str(raw_path), frame), cv2.imwrite(str(left_path), left), cv2.imwrite(str(right_path), right))
         ):
@@ -340,13 +376,48 @@ class HeadlessCalibrationEngine:
             "features": pair.features.__dict__,
             "metrics": pair.metrics,
         }
-        (accepted_dir / f"{index:04d}_metadata.json").write_text(
+        metadata.update({"source": "auto", "pose_slot": slot, "corners_detected": True})
+        (manual_dir / f"{index:04d}_metadata.json").write_text(
             json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         with self._lock:
             self._accepted.append(pair)
+            self._pose_slots[slot] += 1
+            completed = index + 1
+            self._status.update(
+                accepted_pairs=len(self._accepted),
+                manual_pairs=completed,
+                saved_pairs=completed,
+                detected_valid_pairs=int(self._status["detected_valid_pairs"]) + 1,
+                pose_slots=dict(self._pose_slots),
+                reason=f"自动保存 {slot}（第 {completed} 组）",
+            )
 
-    def _save_manual_snapshot(self, frame, left, right) -> None:
+    @staticmethod
+    def _sharpness_score(left, right) -> float:
+        scores = []
+        for image in (left, right):
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            scores.append(float(cv2.Laplacian(gray, cv2.CV_64F).var()))
+        return min(scores)
+
+    def _save_manual_burst(self, burst, pattern) -> None:
+        scored = [
+            (self._sharpness_score(left, right), frame, left, right)
+            for frame, left, right in burst
+        ]
+        sharpness, frame, left, right = max(scored, key=lambda item: item[0])
+        left_gray = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)
+        right_gray = cv2.cvtColor(right, cv2.COLOR_BGR2GRAY)
+        corners_detected = (
+            detect_chessboard(left_gray, pattern) is not None
+            and detect_chessboard(right_gray, pattern) is not None
+        )
+        self._save_manual_snapshot(frame, left, right, sharpness, corners_detected)
+
+    def _save_manual_snapshot(
+        self, frame, left, right, sharpness: float = 0.0, corners_detected: bool = False
+    ) -> None:
         manual_dir = self.session_dir / "manual"
         manual_dir.mkdir(parents=True, exist_ok=True)
         with self._lock:
@@ -364,13 +435,30 @@ class HeadlessCalibrationEngine:
             )
         ):
             raise RuntimeError("写入手动采集图像失败")
+        metadata = {
+            "index": index,
+            "source": "manual",
+            "captured_at_unix": time.time(),
+            "sharpness": float(sharpness),
+            "corners_detected": bool(corners_detected),
+        }
+        (manual_dir / f"{index:04d}_metadata.json").write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         with self._lock:
             completed = index + 1
             target = int(self._status["target_pairs"])
+            valid = int(self._status["detected_valid_pairs"]) + int(corners_detected)
             self._status.update(
                 manual_pairs=completed,
+                saved_pairs=completed,
+                detected_valid_pairs=valid,
                 guidance=manual_guidance(completed, target),
-                reason="本轮采集完成" if completed >= target else f"已保存第 {completed} 组",
+                reason=(
+                    "本轮采集完成"
+                    if completed >= target
+                    else f"已强制保存第 {completed} 组"
+                ),
             )
 
     def _update_preview(self, left, right, left_corners, right_corners, pattern) -> None:
@@ -415,8 +503,8 @@ class HeadlessCalibrationEngine:
                 continue
             left_gray = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)
             right_gray = cv2.cvtColor(right, cv2.COLOR_BGR2GRAY)
-            left_corners = detect_chessboard(left_gray, pattern)
-            right_corners = detect_chessboard(right_gray, pattern)
+            left_corners, left_method = detect_chessboard_with_retry(left_gray, pattern)
+            right_corners, right_method = detect_chessboard_with_retry(right_gray, pattern)
             if left_corners is None or right_corners is None:
                 rejected.append(index)
                 continue
@@ -442,7 +530,11 @@ class HeadlessCalibrationEngine:
                     right_corners=right_corners.copy(),
                     image_size=(left.shape[1], left.shape[0]),
                     features=decision.features,
-                    metrics=decision.metrics,
+                    metrics={
+                        **decision.metrics,
+                        "left_detection_enhanced": float(left_method == "clahe"),
+                        "right_detection_enhanced": float(right_method == "clahe"),
+                    },
                 )
             )
         return pairs, rejected
@@ -450,13 +542,16 @@ class HeadlessCalibrationEngine:
     def _solve(self) -> None:
         with self._lock:
             self._status.update(state="solving", reason="正在检测手动样本角点", stable_progress=0.0)
-            pairs = list(self._accepted)
         pattern = (int(self.config["board"]["columns"]), int(self.config["board"]["rows"]))
-        rejected = []
-        if len(pairs) < int(self.config["capture"]["minimum_pairs"]):
-            pairs, rejected = self._load_manual_pairs(pattern)
+        pairs, rejected = self._load_manual_pairs(pattern)
+        with self._lock:
+            self._status.update(detected_valid_pairs=len(pairs), accepted_pairs=len(pairs))
         minimum = int(self.config["capture"]["minimum_pairs"])
         if len(pairs) < minimum:
+            missing_slots = [
+                name for name, quota in POSE_SLOT_QUOTAS.items()
+                if self._pose_slots.get(name, 0) < quota
+            ]
             with self._lock:
                 self._status.update(
                     state="retake",
@@ -465,7 +560,8 @@ class HeadlessCalibrationEngine:
                     error=(
                         f"已检测 {len(self._manual_pair_paths())} 对，"
                         f"有效 {len(pairs)} 对，至少需要 {minimum} 对；"
-                        f"不合格编号：{rejected}"
+                        f"不合格编号：{rejected}；"
+                        f"建议补拍：{missing_slots[:4]}"
                     ),
                 )
             return

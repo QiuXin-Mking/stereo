@@ -1,7 +1,8 @@
 import numpy as np
 import pytest
 
-from stereo_calibrator.detector import pose_features
+import stereo_calibrator.detector as detector
+from stereo_calibrator.detector import detect_chessboard_with_retry, pose_features
 from stereo_calibrator.sbs import split_sbs
 
 
@@ -46,3 +47,26 @@ def test_pose_features_are_normalized():
 def test_pose_features_rejects_empty_corners():
     with pytest.raises(ValueError, match="corners"):
         pose_features(np.empty((0, 2), dtype=np.float32), (100, 50))
+
+
+def test_detection_retry_returns_raw_without_enhancement(monkeypatch):
+    corners = np.zeros((40, 2), np.float32)
+    calls = []
+    monkeypatch.setattr(detector, "detect_chessboard", lambda image, _pattern: calls.append(image) or corners)
+
+    result, method = detect_chessboard_with_retry(np.zeros((40, 40), np.uint8), (8, 5))
+
+    assert result is corners
+    assert method == "raw"
+    assert len(calls) == 1
+
+
+def test_detection_retry_uses_clahe_after_raw_failure(monkeypatch):
+    corners = np.zeros((40, 2), np.float32)
+    results = iter((None, corners))
+    monkeypatch.setattr(detector, "detect_chessboard", lambda *_args: next(results))
+
+    result, method = detect_chessboard_with_retry(np.zeros((40, 40), np.uint8), (8, 5))
+
+    assert result is corners
+    assert method == "clahe"
