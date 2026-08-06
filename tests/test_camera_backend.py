@@ -67,3 +67,34 @@ def test_linux_backend_reports_open_failure(monkeypatch):
 
     with pytest.raises(RuntimeError, match="/dev/video0"):
         open_linux_camera("/dev/video0", CameraMode(3840, 1080, 30, "MJPG"))
+
+
+def test_mode_probe_returns_first_exact_supported_mode(monkeypatch):
+    calls = []
+    expected = CameraMode(3840, 1080, 30, "MJPG")
+    fake = FakeCapture(3840, 1080, 30, "MJPG")
+
+    def fake_open(_device, mode):
+        calls.append(mode)
+        if mode.width == 4000:
+            raise RuntimeError("unsupported")
+        return fake
+
+    monkeypatch.setattr(camera_backend, "open_linux_camera", fake_open)
+
+    capture, mode = camera_backend.open_first_supported_linux_camera(
+        "/dev/video0",
+        [CameraMode(4000, 1200, 30, "MJPG"), expected],
+    )
+
+    assert capture is fake
+    assert mode == expected
+    assert [item.width for item in calls] == [4000, 3840]
+
+
+def test_linux_camera_name_reads_video_node_name(monkeypatch, tmp_path):
+    name_file = tmp_path / "name"
+    name_file.write_text("DECXIN Camera: DECXIN Camera\n")
+    monkeypatch.setattr(camera_backend, "_video_name_path", lambda _device: name_file)
+
+    assert camera_backend.linux_camera_name("/dev/video0") == "DECXIN Camera: DECXIN Camera"

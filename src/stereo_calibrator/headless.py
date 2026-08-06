@@ -9,16 +9,23 @@ from typing import Dict, List, Mapping, Optional
 import cv2
 import numpy as np
 
-from .camera_backend import CameraMode, open_linux_camera
+from .camera_backend import (
+    CameraMode,
+    linux_camera_name,
+    open_first_supported_linux_camera,
+)
+from .camera_profile import CameraProfile, detect_camera_profile, split_profile_frame
 from .detector import detect_chessboard
 from .exporter import export_result
 from .models import AcceptedPair, PoseFeatures
 from .quality import evaluate_pair
-from .sbs import split_sbs
 from .solver import solve_stereo
 
 
-RK3588_MODE = CameraMode(3840, 1080, 30.0, "MJPG")
+SUPPORTED_RK3588_MODES = (
+    CameraMode(4000, 1200, 30.0, "MJPG"),
+    CameraMode(3840, 1080, 30.0, "MJPG"),
+)
 
 
 def manual_guidance(completed: int, target: int = 32) -> str:
@@ -72,12 +79,16 @@ class HeadlessCalibrationEngine:
         square_size_m: float,
         device: str,
         camera=None,
+        device_name: Optional[str] = None,
     ) -> None:
         self.config = config
         self.session_dir = Path(session_dir)
         self.square_size_m = float(square_size_m)
         self.device = device
         self._camera = camera
+        self._device_name = device_name or str(config["device"].get("name", device))
+        self._selected_mode: Optional[CameraMode] = None
+        self._profile: Optional[CameraProfile] = None
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._solve_event = threading.Event()
@@ -88,8 +99,10 @@ class HeadlessCalibrationEngine:
         self._status: Dict[str, object] = {
             "state": "starting",
             "device": device,
-            "mode": "MJPG 3840x1080@30",
-            "per_eye": "1920x1080",
+            "camera_label": "detecting",
+            "mode": "探测中",
+            "per_eye": "探测中",
+            "code_band": "探测中",
             "accepted_pairs": 0,
             "manual_pairs": 0,
             "target_pairs": int(config["capture"]["target_pairs"]),
@@ -123,7 +136,10 @@ class HeadlessCalibrationEngine:
             raise RuntimeError("采集引擎已经启动")
         self.session_dir.mkdir(parents=True, exist_ok=True)
         if self._camera is None:
-            self._camera = open_linux_camera(self.device, RK3588_MODE)
+            self._device_name = linux_camera_name(self.device)
+            self._camera, self._selected_mode = open_first_supported_linux_camera(
+                self.device, SUPPORTED_RK3588_MODES
+            )
         with self._lock:
             self._status.update(state="capturing", reason="等待棋盘")
         self._thread = threading.Thread(target=self._run, name="calibration-capture", daemon=True)
@@ -203,11 +219,37 @@ class HeadlessCalibrationEngine:
                 ok, frame = self._camera.read()
                 if not ok or frame is None:
                     raise RuntimeError("V4L2 连续采帧失败")
-                if frame.shape[1] != RK3588_MODE.width or frame.shape[0] != RK3588_MODE.height:
-                    raise RuntimeError(
-                        f"采集帧尺寸变化：期望 3840x1080，实际 {frame.shape[1]}x{frame.shape[0]}"
+                if self._selected_mode is None:
+                    self._selected_mode = CameraMode(
+                        frame.shape[1], frame.shape[0], 30.0, "MJPG"
                     )
-                left, right = split_sbs(frame, bool(self.config["device"].get("swap_eyes", False)))
+                if self._profile is None:
+                    self._profile = detect_camera_profile(
+                        self._device_name, frame, self._selected_mode
+                    )
+                    with self._lock:
+                        self._status.update(
+                            camera_label=self._profile.label,
+                            mode=self._profile.mode.describe(),
+                            per_eye=(
+                                f"{self._profile.per_eye_size[0]}x"
+                                f"{self._profile.per_eye_size[1]}"
+                            ),
+                            code_band=self._profile.code_band_status,
+                        )
+                if (
+                    frame.shape[1] != self._profile.mode.width
+                    or frame.shape[0] != self._profile.mode.height
+                ):
+                    raise RuntimeError(
+                        f"采集帧尺寸变化：期望 {self._profile.mode.width}x"
+                        f"{self._profile.mode.height}，实际 {frame.shape[1]}x{frame.shape[0]}"
+                    )
+                left, right = split_profile_frame(
+                    frame,
+                    self._profile,
+                    bool(self.config["device"].get("swap_eyes", False)),
+                )
                 with self._lock:
                     manual_requested = self._manual_requests > 0
                     if manual_requested:

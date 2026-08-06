@@ -18,6 +18,13 @@ class FakeCamera:
         self.released = True
 
 
+class WorldCamera(FakeCamera):
+    def read(self):
+        frame = np.full((1200, 4000, 3), 100, np.uint8)
+        frame[:, :160] = 0
+        return True, frame
+
+
 def make_config():
     return {
         "device": {"name": "RK camera"},
@@ -68,7 +75,8 @@ def test_status_snapshot_is_json_safe(tmp_path):
     encoded = json.dumps(engine.status_snapshot(), ensure_ascii=False)
 
     assert '"device": "/dev/video0"' in encoded
-    assert '"mode": "MJPG 3840x1080@30"' in encoded
+    assert '"mode": "探测中"' in encoded
+    assert '"camera_label": "detecting"' in encoded
 
 
 def test_stop_changes_state_without_starting_worker(tmp_path):
@@ -122,3 +130,47 @@ def test_manual_capture_does_not_queue_beyond_target(tmp_path):
 
     assert engine.action("manual_capture") == {"ok": True}
     assert engine.action("manual_capture") == {"ok": False, "error": "本轮 32 组已采集完成"}
+
+
+def test_world_camera_resolves_status_and_cropped_preview(tmp_path, monkeypatch):
+    engine = HeadlessCalibrationEngine(
+        make_config(),
+        tmp_path,
+        0.020,
+        "/dev/video0",
+        camera=WorldCamera(),
+        device_name="DECXIN Camera",
+    )
+    monkeypatch.setattr(headless, "detect_chessboard", lambda *_args: None)
+
+    engine.start()
+    deadline = time.monotonic() + 2
+    while engine.status_snapshot()["camera_label"] == "detecting" and time.monotonic() < deadline:
+        time.sleep(0.01)
+    engine.action("stop")
+    engine.join(2)
+    status = engine.status_snapshot()
+
+    assert status["camera_label"] == "world intelligent"
+    assert status["mode"] == "MJPG 4000x1200@30"
+    assert status["per_eye"] == "1920x1200"
+    assert status["code_band"] == "通过（160 px）"
+
+
+def test_matching_world_camera_without_band_enters_error(tmp_path):
+    camera = WorldCamera()
+    camera.read = lambda: (True, np.full((1200, 4000, 3), 100, np.uint8))
+    engine = HeadlessCalibrationEngine(
+        make_config(),
+        tmp_path,
+        0.020,
+        "/dev/video0",
+        camera=camera,
+        device_name="DECXIN Camera",
+    )
+
+    engine.start()
+    engine.join(2)
+
+    assert engine.status_snapshot()["state"] == "error"
+    assert "码带识别失败" in engine.status_snapshot()["error"]

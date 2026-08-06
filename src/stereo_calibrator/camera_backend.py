@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Union
+from pathlib import Path
+from typing import Iterable, Tuple, Union
 
 import cv2
 
@@ -63,6 +64,35 @@ def open_linux_camera(device: str, mode: CameraMode) -> cv2.VideoCapture:
             "为避免错误标定，不允许静默降级。"
         )
     return cap
+
+
+def _video_name_path(device: str) -> Path:
+    return Path("/sys/class/video4linux") / Path(device).name / "name"
+
+
+def linux_camera_name(device: str) -> str:
+    path = _video_name_path(device)
+    try:
+        name = path.read_text(encoding="utf-8").strip()
+    except OSError as error:
+        raise RuntimeError(f"无法读取 V4L2 设备名称 {path}: {error}") from error
+    if not name:
+        raise RuntimeError(f"V4L2 设备名称为空: {path}")
+    return name
+
+
+def open_first_supported_linux_camera(
+    device: str, modes: Iterable[CameraMode]
+) -> Tuple[cv2.VideoCapture, CameraMode]:
+    failures = []
+    for mode in modes:
+        try:
+            return open_linux_camera(device, mode), mode
+        except RuntimeError as error:
+            failures.append(f"{mode.describe()}: {error}")
+    if not failures:
+        raise RuntimeError("没有配置可探测的 V4L2 相机模式")
+    raise RuntimeError("设备不支持平台采集模式：" + "；".join(failures))
 
 
 def open_platform_camera(
