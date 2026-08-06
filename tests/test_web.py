@@ -15,6 +15,8 @@ class FakeEngine:
     def status_snapshot(self):
         return {
             "state": "capturing",
+            "camera_label": "world intelligent",
+            "code_band": "通过（160 px）",
             "accepted_pairs": 0,
             "manual_pairs": 0,
             "target_pairs": 32,
@@ -77,6 +79,10 @@ def test_home_page_contains_preview_and_controls(running_server):
     assert "手动素材" not in html
     assert 'id="manualCount"' not in html
     assert "s.manual_pairs" in html
+    assert 'id="cameraLabel"' in html
+    assert 'id="codeBand"' in html
+    assert "s.camera_label" in html
+    assert "s.code_band" in html
 
 
 def test_status_endpoint_returns_engine_snapshot(running_server):

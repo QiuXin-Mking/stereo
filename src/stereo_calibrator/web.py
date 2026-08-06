@@ -34,8 +34,10 @@ HTML_PAGE = """<!doctype html>
   <h1>RK3588 · SBS 双目棋盘格标定</h1>
   <div class="top">
     <div class="card">状态<b id="state">连接中</b></div>
+    <div class="card">设备标签<b id="cameraLabel">探测中</b></div>
     <div class="card">设备模式<b id="mode">-</b></div>
     <div class="card">单眼分辨率<b id="perEye">-</b></div>
+    <div class="card">码带检测<b id="codeBand">探测中</b></div>
     <div class="card">采集进度<b id="count">0 / 32</b></div>
   </div>
   <div id="guidance">等待状态...</div>
@@ -63,7 +65,8 @@ async function refresh() {
   try {
     const s = await (await fetch('/api/status', {cache:'no-store'})).json();
     state.textContent=s.state; state.className=(s.state==='pass'?'pass':(s.state==='error'||s.state==='retake'?'error':''));
-    mode.textContent=s.mode; perEye.textContent=s.per_eye; count.textContent=`${s.manual_pairs} / ${s.target_pairs}`;
+    cameraLabel.textContent=s.camera_label; mode.textContent=s.mode; perEye.textContent=s.per_eye;
+    codeBand.textContent=s.code_band; count.textContent=`${s.manual_pairs} / ${s.target_pairs}`;
     guidance.textContent=s.guidance; reason.textContent=s.error || s.reason; stable.value=s.stable_progress;
     rmsL.textContent=show(s.mono_rms_left); rmsR.textContent=show(s.mono_rms_right); epi.textContent=show(s.epipolar_p95); result.textContent=show(s.result_dir);
   } catch(e) { message.textContent='状态连接失败: '+e; }

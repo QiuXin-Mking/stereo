@@ -120,7 +120,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         f"方格={square_mm:.3f} mm  目标={args.target} 对"
     )
     if args.web:
-        print(f"RK3588 模式=MJPG 3840x1080@30  设备={args.device}")
+        print(f"RK3588 模式=自动探测 4000x1200/3840x1080 MJPG@30  设备={args.device}")
         print(f"Web 地址=http://{args.host}:{args.port}")
     if args.dry_run:
         print("DRY RUN：不会打开相机，也不会创建 session。")

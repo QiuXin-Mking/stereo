@@ -43,7 +43,8 @@ def test_web_dry_run_prints_rk_mode(tmp_path, capsys):
 
     assert code == 0
     output = capsys.readouterr().out
-    assert "MJPG 3840x1080@30" in output
+    assert "RK3588 模式=自动探测" in output
+    assert "4000x1200/3840x1080 MJPG@30" in output
     assert "http://0.0.0.0:8765" in output
     assert list(Path(tmp_path).iterdir()) == []
 
