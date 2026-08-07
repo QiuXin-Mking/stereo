@@ -12,6 +12,7 @@ FORWARD="127.0.0.1:18765:127.0.0.1:8765"
 TUNNEL_PID="$RUNTIME_DIR/tunnel.pid"
 TUNNEL_LOG="$RUNTIME_DIR/tunnel.log"
 REMOTE_LOG="/tmp/world_intelligent_calibrate.log"
+KALIBR_IMAGE="stereo-kalibr-rk3588:1f60227442d25e36365ef5f72cd80b9666d73467"
 
 mkdir -p "$RUNTIME_DIR"
 
@@ -22,6 +23,11 @@ remote_status() {
 
 local_status() {
   curl --connect-timeout 2 -fsS "$LOCAL_STATUS" | grep -q '"state"'
+}
+
+remote_kalibr_ready() {
+  ssh -o BatchMode=yes -o ConnectTimeout=8 "$RK_HOST" \
+    "docker image inspect '$KALIBR_IMAGE' >/dev/null 2>&1 && curl -fsS '$REMOTE_STATUS' | grep -q '\"kalibr\"'"
 }
 
 wait_for_remote() {
@@ -63,6 +69,12 @@ else
     exit 1
   fi
   echo "      远端服务已启动。"
+fi
+
+if remote_kalibr_ready; then
+  echo "      Kalibr ARM64 运行时已就绪。"
+else
+  echo "      提示：Kalibr 运行时未就绪，OpenCV 标定仍可正常使用。"
 fi
 
 echo "[3/3] 检查 Codex 本地隧道..."
