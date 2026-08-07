@@ -9,6 +9,7 @@ def test_deploy_start_uses_safe_fixed_endpoints():
     text = START.read_text(encoding="utf-8")
 
     assert "root@192.168.100.200" in text
+    assert 'RK_HOST=${RK_HOST:-"root@192.168.100.200"}' in text
     assert "127.0.0.1:18765:127.0.0.1:8765" in text
     assert "ExitOnForwardFailure=yes" in text
     assert "BatchMode=yes" in text

@@ -3,7 +3,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 RUNTIME_DIR="$SCRIPT_DIR/.runtime"
-RK_HOST="root@192.168.100.200"
+RK_HOST=${RK_HOST:-"root@192.168.100.200"}
 REMOTE_PROJECT="/root/stereo_chessboard_calibrator"
 REMOTE_STATUS="http://127.0.0.1:8765/api/status"
 LOCAL_STATUS="http://127.0.0.1:18765/api/status"
