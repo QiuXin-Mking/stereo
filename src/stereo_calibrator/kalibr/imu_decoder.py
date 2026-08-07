@@ -241,12 +241,36 @@ def decode_vertical_payload_bytes(frame: np.ndarray) -> bytes:
     return b""
 
 
+def decode_left_side_payload_bytes(frame: np.ndarray) -> bytes:
+    """Decode a left-side code band whose chunks run across image rows."""
+    if frame.ndim == 3 and frame.shape[2] >= 2:
+        luma = frame[:, :, 1]
+    elif frame.ndim == 2:
+        luma = frame
+    else:
+        raise ValueError("码带帧必须是灰度图或 BGR 图")
+    height, width = luma.shape
+    if height <= 0 or width <= 0:
+        return b""
+    decoded = bytearray()
+    for row in range(3, height, IMU_USIZE):
+        group = _decode_luma_line(luma[row, :])
+        if group:
+            remaining = IMU_MAX_BYTES - len(decoded)
+            decoded.extend(group[:remaining])
+        if len(decoded) >= IMU_TARGET or len(decoded) >= IMU_MAX_BYTES:
+            break
+    return bytes(decoded) if len(decoded) >= IMU_GROUP else b""
+
+
 def decode_vertical_band(
     frame: np.ndarray,
     frame_idx: int,
     clock: Optional[DeviceClock] = None,
 ) -> DecodedImuFrame:
-    payload = decode_vertical_payload_bytes(frame)
+    payload = decode_left_side_payload_bytes(frame)
+    if len(payload) < IMU_GROUP:
+        payload = decode_vertical_payload_bytes(frame)
     if len(payload) < IMU_GROUP:
         raise ValueError("IMU payload 未从竖向码带中解出")
     return parse_payload(payload, frame_idx=frame_idx, clock=clock)

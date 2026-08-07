@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 import shutil
+import threading
 from typing import Callable, Mapping, Optional
 
 from .config_writer import write_kalibr_configs
@@ -54,6 +55,7 @@ class KalibrController:
         self._runtime = runtime or KalibrRuntime(
             "stereo-kalibr-rk3588:1f60227442d25e36365ef5f72cd80b9666d73467"
         )
+        self._lock = threading.RLock()
         self._state = "ready"
         self._reasons: list[str] = []
         self._metrics: dict[str, object] = {}
@@ -62,25 +64,27 @@ class KalibrController:
         self._restore_job()
 
     def action(self, name: str) -> dict[str, object]:
-        try:
-            if name == "kalibr_start":
-                return self._start()
-            if name == "kalibr_stop":
-                return self._stop()
-            if name == "kalibr_validate":
-                return self._validate()
-            if name == "kalibr_solve":
-                return self._solve()
-            return {"ok": False, "error": f"未知 Kalibr 操作：{name}"}
-        except (OSError, RuntimeError, ValueError) as error:
-            self._state = "error"
-            self._error = str(error)
-            self._persist_job()
-            return {"ok": False, "error": self._error}
+        with self._lock:
+            try:
+                if name == "kalibr_start":
+                    return self._start()
+                if name == "kalibr_stop":
+                    return self._stop()
+                if name == "kalibr_validate":
+                    return self._validate()
+                if name == "kalibr_solve":
+                    return self._solve()
+                return {"ok": False, "error": f"未知 Kalibr 操作：{name}"}
+            except (OSError, RuntimeError, ValueError) as error:
+                self._state = "error"
+                self._error = str(error)
+                self._persist_job()
+                return {"ok": False, "error": self._error}
 
     def ingest(self, raw_frame, left, right, frame_idx: int) -> None:
-        if self._state == "recording":
-            self._recorder.ingest(raw_frame, left, right, int(frame_idx))
+        with self._lock:
+            if self._state == "recording":
+                self._recorder.ingest(raw_frame, left, right, int(frame_idx))
 
     def abort(self, reason: str) -> None:
         if self._state == "recording":

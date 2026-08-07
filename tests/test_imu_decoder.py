@@ -54,6 +54,22 @@ def encode_vertical_band(payload, *, height=1200, width=4000):
     return frame
 
 
+def encode_left_side_band(payload, *, height=1200, width=4000):
+    """Match the real world-intelligent layout: two bytes per image row."""
+    frame = np.zeros((height, width, 3), np.uint8)
+    for chunk_index in range(0, len(payload), 2):
+        row = 3 + (chunk_index // 2) * 8
+        frame[row, :4, 1] = 255
+        chunk = payload[chunk_index : chunk_index + 2]
+        for bit_index in range(len(chunk) * 8):
+            value = (chunk[bit_index // 8] >> (bit_index % 8)) & 1
+            column = 8 + bit_index * 8
+            frame[row, column : column + 2, 1] = 100 if value else 0
+        end = 8 + len(chunk) * 8 * 8
+        frame[row, end : end + 2, 1] = 255
+    return frame
+
+
 def test_parse_payload_matches_reference_units():
     result = parse_payload(make_payload(), frame_idx=7, clock=DeviceClock())
 
@@ -84,6 +100,17 @@ def test_vertical_band_decodes_lsb_first_groups():
     result = decode_vertical_band(frame, frame_idx=3, clock=DeviceClock())
     assert result.payload_bytes == 32
     assert result.samples[0].raw_t_us == 10_250
+
+
+def test_left_side_band_decodes_across_rows_like_real_world_camera():
+    payload = make_payload(exp_start=20_000, exp_end=20_500, t_us=20_250)
+    frame = encode_left_side_band(payload)
+
+    result = decode_vertical_band(frame, frame_idx=4, clock=DeviceClock())
+
+    assert result.payload_bytes == 32
+    assert result.image_timestamp_ns == 20_250_000
+    assert result.samples[0].raw_t_us == 20_250
 
 
 def test_magnetometer_is_decoded_for_diagnostics():

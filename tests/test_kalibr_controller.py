@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import threading
 
 import numpy as np
 import pytest
@@ -88,6 +89,47 @@ def test_happy_path_and_ingest(tmp_path):
     assert controller.snapshot()["state"] == "ready_to_solve"
     assert controller.action("kalibr_solve") == {"ok": True}
     assert controller.snapshot()["state"] == "bagging"
+
+
+def test_stop_waits_for_inflight_ingest_before_closing_recorder(tmp_path):
+    entered = threading.Event()
+    release = threading.Event()
+    stopped = threading.Event()
+
+    class BlockingRecorder(FakeRecorder):
+        def ingest(self, *_args):
+            entered.set()
+            assert release.wait(timeout=2)
+            super().ingest(*_args)
+
+        def stop(self):
+            super().stop()
+            stopped.set()
+
+    controller = KalibrController(
+        tmp_path / "session-1",
+        {},
+        recorder_factory=BlockingRecorder,
+        runtime=FakeRuntime(),
+    )
+    controller.action("kalibr_start")
+    frame = np.zeros((4, 4), np.uint8)
+    ingest_thread = threading.Thread(
+        target=controller.ingest, args=(frame, frame, frame, 1)
+    )
+    stop_thread = threading.Thread(
+        target=controller.action, args=("kalibr_stop",)
+    )
+    ingest_thread.start()
+    assert entered.wait(timeout=1)
+    stop_thread.start()
+
+    assert not stopped.wait(timeout=0.1)
+    release.set()
+    ingest_thread.join(timeout=2)
+    stop_thread.join(timeout=2)
+    assert stopped.is_set()
+    assert controller.snapshot()["state"] == "recorded"
 
 
 def test_validation_failure_preserves_reasons(tmp_path):
