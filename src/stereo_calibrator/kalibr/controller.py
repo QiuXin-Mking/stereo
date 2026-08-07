@@ -14,16 +14,17 @@ from .validation import ValidationReport, validate_dataset
 
 
 ARTIFACTS = {
-    "summary": "summary.json",
+    "summary": "results/summary.json",
     "target": "target.yaml",
     "imu": "imu.yaml",
     "pipeline": "pipeline.json",
-    "bag": "dataset.bag",
-    "camchain": "dataset-camchain.yaml",
-    "camchain_imu": "dataset-camchain-imucam.yaml",
-    "camera_report": "report-cam.pdf",
-    "imu_report": "report-imucam.pdf",
-    "pipeline_log": "pipeline.log",
+    "bag": "results/dataset.bag",
+    "camchain": "results/camchain.yaml",
+    "camchain_imu": "results/camchain-imucam.yaml",
+    "camera_report": "results/dataset-report-cam.pdf",
+    "imu_report": "results/dataset-report-imucam.pdf",
+    "camera_log": "results/cameras.log",
+    "imu_log": "results/imu-camera.log",
 }
 
 PIPELINE_STATES = {

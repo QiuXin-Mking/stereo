@@ -121,14 +121,15 @@ def test_stage_file_and_artifact_allow_list(tmp_path):
     controller = make_controller(tmp_path)
     controller.action("kalibr_start")
     dataset = tmp_path / "session-1/kalibr"
-    (dataset / "summary.json").write_text("{}", encoding="utf-8")
+    (dataset / "results").mkdir()
+    (dataset / "results/summary.json").write_text("{}", encoding="utf-8")
     (dataset / "stage.json").write_text(
         json.dumps({"stage": "pass", "message": "done"}), encoding="utf-8"
     )
 
     assert controller.snapshot()["state"] == "pass"
     assert "summary" in controller.artifacts()
-    assert controller.artifact_path("summary") == dataset / "summary.json"
+    assert controller.artifact_path("summary") == dataset / "results/summary.json"
     with pytest.raises(ValueError, match="非法产物"):
         controller.artifact_path("../../etc/passwd")
 
