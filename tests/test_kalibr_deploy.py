@@ -19,8 +19,8 @@ def test_installer_validates_archive_and_never_installs_ros_on_host():
     assert "docker load" in text
     assert "uname -m" in text
     assert "4194304" in text
-    assert "kalibr_calibrate_cameras --help" in text
-    assert "kalibr_calibrate_imu_camera --help" in text
+    assert "verify_help kalibr_calibrate_cameras" in text
+    assert "verify_help kalibr_calibrate_imu_camera" in text
     assert "apt install ros-" not in text
     assert "desktop-full" not in text
 

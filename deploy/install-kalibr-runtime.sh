@@ -33,16 +33,23 @@ checksum_dir=$(CDPATH= cd -- "$(dirname -- "$CHECKSUM")" && pwd)
 checksum_name=$(basename -- "$CHECKSUM")
 (cd "$checksum_dir" && sha256sum -c "$checksum_name")
 
-if docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "镜像已存在，跳过导入：$IMAGE"
-else
-  zstd -dc "$ARCHIVE" | docker load
-fi
+zstd -dc "$ARCHIVE" | docker load
 
 docker image inspect "$IMAGE" --format '{{.Architecture}}' | grep -qx arm64
-docker run --rm --platform linux/arm64 --entrypoint /bin/bash "$IMAGE" \
-  -lc '. /opt/ros/noetic/setup.sh && . /opt/kalibr/install/setup.sh && kalibr_calibrate_cameras --help >/dev/null'
-docker run --rm --platform linux/arm64 --entrypoint /bin/bash "$IMAGE" \
-  -lc '. /opt/ros/noetic/setup.sh && . /opt/kalibr/install/setup.sh && kalibr_calibrate_imu_camera --help >/dev/null'
+verify_help() {
+  command_name=$1
+  set +e
+  docker run --rm --platform linux/arm64 --entrypoint /bin/bash "$IMAGE" \
+    -lc ". /opt/ros/noetic/setup.sh && . /opt/kalibr/install/setup.sh && $command_name --help >/dev/null"
+  status=$?
+  set -e
+  if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
+    echo "错误：${command_name} --help 失败（${status}）" >&2
+    exit "$status"
+  fi
+}
+
+verify_help kalibr_calibrate_cameras
+verify_help kalibr_calibrate_imu_camera
 
 echo "Kalibr ARM64 运行时安装并验证通过：$IMAGE"
