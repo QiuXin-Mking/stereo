@@ -11,6 +11,13 @@ capture:
   maximum_pairs: 40
   stable_seconds: 0.8
   preview_width_per_eye: 720
+kalibr:
+  minimum_duration_seconds: 60
+  recommended_duration_seconds: 90
+  image_stride: 3
+  minimum_decode_ratio: 0.90
+  minimum_imu_rate_hz: 250
+  maximum_imu_rate_hz: 400
 quality:
   minimum_sharpness: 80.0
   maximum_clipped_ratio: 0.08
