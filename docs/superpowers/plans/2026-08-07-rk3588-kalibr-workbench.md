@@ -14,7 +14,7 @@
 - OpenCV 模式的 32 槽位、手动一按必保存、5 帧择优、CLAHE 重试和导出不得回归。
 - Kalibr 棋盘为 8×5 内角点，方格 0.020m。
 - 码带固定为 IMU_VAL0=50、IMU_VAL1=220、IMU_USIZE=8、IMU_GROUP=16、IMU_TARGET=272，比特 LSB-first，整数大端。
-- 单位转换固定为 mg * 9.80665 / 1000 和 mdps * pi / 180000。
+- 单位转换固定为加速度 `raw * (4000/32768) * 9.80665 / 1000`，陀螺仪 `raw * (1000/32768) * pi / 180`。参考 C++ 的 gx_mdps 字段名是历史误命名，数值实际为 deg/s。
 - 数据至少 60s；解码率 >=90%；IMU 250–400Hz；左右图像数相同；时间戳单调。
 - 默认 IMU 参数：0.02、0.002、0.002、0.0002，结果必须标记 provisional。
 - Debian 11 宿主机不安装 ROS Desktop、RViz、Gazebo 或完整 ROS，不启动 roscore。
@@ -97,7 +97,7 @@ class DecodedImuFrame:
     magnetic_samples: Sequence[MagSample]
 ~~~
 
-Implement be_u32, be_s16, repeated old-header detection, invalid sentinel filtering, exposure midpoint, ACC_SENS=4000/32768 mg/LSB and GYR_SENS=1000/32768 mdps/LSB exactly as hardware/imu/imu_decode.h. Decode AK09940 into magnetic_samples with MAG_SENS=0.15 uT/LSB for decoder diagnostics, but never expose those samples to the Kalibr bag writer.
+Implement be_u32, be_s16, repeated old-header detection, invalid sentinel filtering, exposure midpoint, ACC_SENS=4000/32768 mg/LSB and GYR_SENS=1000/32768 deg/s/LSB. Preserve byte compatibility with hardware/imu/imu_decode.h while correcting its historical gx_mdps label before conversion to rad/s. Decode AK09940 into magnetic_samples with MAG_SENS=0.15 uT/LSB for decoder diagnostics, but never expose those samples to the Kalibr bag writer.
 
 - [ ] **Step 4: Add a synthetic vertical-band round-trip**
 
