@@ -39,6 +39,38 @@ class BurstCamera(FakeCamera):
         return True, frame
 
 
+class FakeKalibrController:
+    def __init__(self):
+        self.state = "ready"
+        self.ingested_frames = 0
+        self.aborted = None
+
+    def action(self, name):
+        transitions = {
+            "kalibr_start": "recording",
+            "kalibr_stop": "recorded",
+            "kalibr_validate": "ready_to_solve",
+            "kalibr_solve": "bagging",
+        }
+        if name not in transitions:
+            return {"ok": False, "error": "bad action"}
+        self.state = transitions[name]
+        return {"ok": True}
+
+    def ingest(self, *_args):
+        self.ingested_frames += 1
+
+    def abort(self, reason):
+        self.aborted = reason
+        self.state = "error"
+
+    def snapshot(self):
+        return {"state": self.state, "total_frames": self.ingested_frames}
+
+    def artifacts(self):
+        return {}
+
+
 def make_config():
     return {
         "device": {"name": "RK camera"},
@@ -268,3 +300,61 @@ def test_matching_world_camera_without_band_enters_error(tmp_path):
 
     assert engine.status_snapshot()["state"] == "error"
     assert "码带识别失败" in engine.status_snapshot()["error"]
+
+
+def test_kalibr_uses_same_camera_loop_and_skips_opencv_detection(tmp_path, monkeypatch):
+    controller = FakeKalibrController()
+    engine = HeadlessCalibrationEngine(
+        make_config(), tmp_path, 0.020, "/dev/video0",
+        camera=WorldCamera(), device_name="DECXIN Camera",
+        kalibr_controller=controller,
+    )
+    monkeypatch.setattr(
+        headless,
+        "detect_chessboard",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("Kalibr 模式不应跑 OpenCV 角点")),
+    )
+
+    assert engine.action("mode_kalibr") == {"ok": True}
+    assert engine.action("kalibr_start") == {"ok": True}
+    engine.start()
+    deadline = time.monotonic() + 2
+    while controller.ingested_frames < 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    engine.action("stop")
+    engine.join(2)
+
+    assert controller.ingested_frames >= 1
+    assert engine.status_snapshot()["workflow"] == "kalibr"
+
+
+def test_mode_switch_is_rejected_while_kalibr_is_recording(tmp_path):
+    controller = FakeKalibrController()
+    engine = HeadlessCalibrationEngine(
+        make_config(), tmp_path, 0.020, "/dev/video0",
+        camera=FakeCamera(), kalibr_controller=controller,
+    )
+    assert engine.action("mode_kalibr") == {"ok": True}
+    assert engine.action("kalibr_start") == {"ok": True}
+
+    response = engine.action("mode_opencv")
+
+    assert response["ok"] is False
+    assert "进行中" in response["error"]
+
+
+def test_camera_failure_aborts_kalibr_recording(tmp_path):
+    controller = FakeKalibrController()
+    camera = FakeCamera()
+    camera.read = lambda: (False, None)
+    engine = HeadlessCalibrationEngine(
+        make_config(), tmp_path, 0.020, "/dev/video0",
+        camera=camera, kalibr_controller=controller,
+    )
+    engine.action("mode_kalibr")
+    engine.action("kalibr_start")
+
+    engine.start()
+    engine.join(2)
+
+    assert controller.aborted == "V4L2 连续采帧失败"

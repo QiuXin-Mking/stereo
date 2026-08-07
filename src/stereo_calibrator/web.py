@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import threading
 import time
+from urllib.parse import unquote
 
 
 HTML_PAGE = """<!doctype html>
@@ -25,13 +26,21 @@ HTML_PAGE = """<!doctype html>
     #guidance { font-size:20px; text-align:center; background:#172033; border:2px solid #60a5fa; border-radius:10px; padding:12px; }
     progress { width:100%; height:16px; }
     button { border:0; border-radius:8px; padding:10px 17px; font-size:15px; color:white; background:#2563eb; cursor:pointer; }
+    button.secondary { background:#475569; }
+    button:disabled { opacity:.45; cursor:not-allowed; }
     button.danger { background:#b91c1c; }
     #message { min-height:24px; color:#fbbf24; }
+    #kalibrLog { white-space:pre-wrap; max-height:220px; overflow:auto; font:12px ui-monospace,monospace; }
+    .hidden { display:none; }
     .pass { color:#34d399 !important; } .error { color:#f87171 !important; }
   </style>
 </head>
 <body><main>
   <h1>RK3588 · SBS 双目棋盘格标定</h1>
+  <div class="controls">
+    <button id="modeOpenCV" onclick="act('mode_opencv')">OpenCV Chessboard</button>
+    <button id="modeKalibr" class="secondary" onclick="act('mode_kalibr')">Kalibr Camera+IMU</button>
+  </div>
   <div class="top">
     <div class="card">状态<b id="state">连接中</b></div>
     <div class="card">设备标签<b id="cameraLabel">探测中</b></div>
@@ -45,6 +54,7 @@ HTML_PAGE = """<!doctype html>
   <div id="guidance">等待状态...</div>
   <img id="preview" alt="双目实时预览">
   <div class="card"><span id="reason">等待棋盘</span><progress id="stable" max="1" value="0"></progress></div>
+  <div id="opencvPanel">
   <div class="metrics">
     <div class="card">左 RMS<b id="rmsL">-</b></div>
     <div class="card">右 RMS<b id="rmsR">-</b></div>
@@ -60,6 +70,25 @@ HTML_PAGE = """<!doctype html>
     <button onclick="act('undo')">撤销上一对</button>
     <button onclick="act('solve')">开始求解</button>
   </div>
+  </div>
+  <div id="kalibrPanel" class="hidden">
+    <div class="metrics">
+      <div class="card">流程阶段<b id="kalibrState">ready</b></div>
+      <div class="card">录制时长<b id="kalibrDuration">0 s</b></div>
+      <div class="card">图像对<b id="kalibrPairs">0</b></div>
+      <div class="card">解码率<b id="kalibrDecode">0%</b></div>
+      <div class="card">IMU 样本<b id="kalibrImu">0</b></div>
+    </div>
+    <div class="controls">
+      <button onclick="act('kalibr_start')">开始录制</button>
+      <button onclick="act('kalibr_stop')">停止录制</button>
+      <button onclick="act('kalibr_validate')">检查数据</button>
+      <button onclick="act('kalibr_solve')">开始 Kalibr 求解</button>
+    </div>
+    <div class="card">质量检查<b id="kalibrReasons">-</b></div>
+    <div class="card">产物下载<div id="artifactLinks">-</div></div>
+    <div class="card">Kalibr 日志<pre id="kalibrLog">-</pre></div>
+  </div>
   <div id="message"></div>
 </main>
 <script>
@@ -73,6 +102,14 @@ async function refresh() {
     validCount.textContent=s.detected_valid_pairs; autoState.textContent=s.auto_capture_enabled ? '开启' : '关闭';
     guidance.textContent=s.guidance; reason.textContent=s.error || s.reason; stable.value=s.stable_progress;
     rmsL.textContent=show(s.mono_rms_left); rmsR.textContent=show(s.mono_rms_right); epi.textContent=show(s.epipolar_p95); result.textContent=show(s.result_dir);
+    const isKalibr=s.workflow==='kalibr'; opencvPanel.classList.toggle('hidden',isKalibr); kalibrPanel.classList.toggle('hidden',!isKalibr);
+    modeOpenCV.className=isKalibr?'secondary':''; modeKalibr.className=isKalibr?'':'secondary';
+    const k=s.kalibr||{}; kalibrState.textContent=show(k.state); kalibrDuration.textContent=(Number(k.duration_seconds||0)).toFixed(1)+' s';
+    kalibrPairs.textContent=Math.min(Number(k.left_images||0),Number(k.right_images||0)); kalibrDecode.textContent=(Number(k.decode_ratio||0)*100).toFixed(1)+'%'; kalibrImu.textContent=show(k.imu_samples||0);
+    kalibrReasons.textContent=(k.validation_reasons||[]).join('；')||'-'; kalibrLog.textContent=k.logs||'-';
+    const active=['recording','validating','bagging','camera_calibrating','imu_calibrating'].includes(k.state);
+    modeOpenCV.disabled=active; modeKalibr.disabled=active;
+    const artifacts=k.artifacts||{}; artifactLinks.innerHTML=Object.entries(artifacts).map(([key,name])=>`<a href="/artifact/${encodeURIComponent(key)}">${name}</a>`).join(' &nbsp; ')||'-';
   } catch(e) { message.textContent='状态连接失败: '+e; }
 }
 async function act(action) {
@@ -109,6 +146,16 @@ def create_server(engine, host: str, port: int) -> ThreadingHTTPServer:
                 json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             )
 
+        def _send_download(self, path) -> None:
+            body = path.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self):
             path = self.path.split("?", 1)[0]
             if path == "/":
@@ -116,6 +163,18 @@ def create_server(engine, host: str, port: int) -> ThreadingHTTPServer:
                 return
             if path == "/api/status":
                 self._send_json(HTTPStatus.OK, engine.status_snapshot())
+                return
+            if path == "/api/artifacts":
+                self._send_json(HTTPStatus.OK, engine.artifacts())
+                return
+            if path.startswith("/artifact/"):
+                key = unquote(path[len("/artifact/"):])
+                try:
+                    artifact = engine.artifact_path(key)
+                except (OSError, ValueError):
+                    self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "产物不存在"})
+                    return
+                self._send_download(artifact)
                 return
             if path == "/stream.mjpg":
                 self.send_response(HTTPStatus.OK)

@@ -21,6 +21,7 @@ from .models import AcceptedPair, PoseFeatures
 from .pose_slots import POSE_SLOT_QUOTAS, classify_pose_slot
 from .quality import evaluate_pair
 from .solver import solve_stereo
+from .kalibr.controller import KalibrController
 
 
 SUPPORTED_RK3588_MODES = (
@@ -81,6 +82,7 @@ class HeadlessCalibrationEngine:
         device: str,
         camera=None,
         device_name: Optional[str] = None,
+        kalibr_controller=None,
     ) -> None:
         self.config = config
         self.session_dir = Path(session_dir)
@@ -88,6 +90,12 @@ class HeadlessCalibrationEngine:
         self.device = device
         self._camera = camera
         self._device_name = device_name or str(config["device"].get("name", device))
+        if kalibr_controller is None and "kalibr" in config:
+            kalibr_controller = KalibrController(
+                self.session_dir, config["kalibr"]
+            )
+        self._kalibr_controller = kalibr_controller
+        self._workflow = "opencv"
         self._selected_mode: Optional[CameraMode] = None
         self._profile: Optional[CameraProfile] = None
         self._lock = threading.RLock()
@@ -124,6 +132,7 @@ class HeadlessCalibrationEngine:
             "epipolar_p95": None,
             "result_dir": None,
             "error": None,
+            "workflow": self._workflow,
         }
 
     @staticmethod
@@ -161,7 +170,14 @@ class HeadlessCalibrationEngine:
 
     def status_snapshot(self) -> Dict[str, object]:
         with self._lock:
-            return dict(self._status)
+            result = dict(self._status)
+        result["workflow"] = self._workflow
+        result["kalibr"] = (
+            self._kalibr_controller.snapshot()
+            if self._kalibr_controller is not None
+            else {"state": "unavailable", "artifacts": {}}
+        )
+        return result
 
     def latest_preview(self) -> bytes:
         with self._lock:
@@ -169,9 +185,19 @@ class HeadlessCalibrationEngine:
 
     def action(self, name: str) -> Dict[str, object]:
         if name not in {
-            "pause", "resume", "undo", "solve", "stop", "manual_capture", "auto_on", "auto_off"
+            "pause", "resume", "undo", "solve", "stop", "manual_capture", "auto_on", "auto_off",
+            "mode_opencv", "mode_kalibr", "kalibr_start", "kalibr_stop",
+            "kalibr_validate", "kalibr_solve",
         }:
             return {"ok": False, "error": "不支持的操作"}
+        if name in {"mode_opencv", "mode_kalibr"}:
+            return self._switch_workflow(name)
+        if name.startswith("kalibr_"):
+            if self._kalibr_controller is None:
+                return {"ok": False, "error": "Kalibr 运行时未配置"}
+            if self._workflow != "kalibr":
+                return {"ok": False, "error": "请先选择 Kalibr Camera+IMU"}
+            return self._kalibr_controller.action(name)
         with self._lock:
             state = str(self._status["state"])
             if name in {"auto_on", "auto_off"}:
@@ -219,7 +245,47 @@ class HeadlessCalibrationEngine:
                 return {"ok": True}
             self._stop_event.set()
             self._status.update(state="stopped", reason="服务已停止")
+            if self._workflow == "kalibr" and self._kalibr_controller is not None:
+                kalibr_state = str(self._kalibr_controller.snapshot().get("state"))
+                if kalibr_state == "recording":
+                    self._kalibr_controller.abort("服务停止")
             return {"ok": True}
+
+    def _switch_workflow(self, name: str) -> Dict[str, object]:
+        target = "kalibr" if name == "mode_kalibr" else "opencv"
+        if target == "kalibr" and self._kalibr_controller is None:
+            return {"ok": False, "error": "Kalibr 运行时未配置"}
+        with self._lock:
+            if str(self._status.get("state")) == "solving":
+                return {"ok": False, "error": "求解进行中，不能切换模式"}
+        if self._kalibr_controller is not None:
+            kalibr_state = str(self._kalibr_controller.snapshot().get("state"))
+            if kalibr_state in {
+                "recording", "validating", "bagging",
+                "camera_calibrating", "imu_calibrating",
+            }:
+                return {"ok": False, "error": "Kalibr 任务进行中，不能切换模式"}
+        self._workflow = target
+        with self._lock:
+            self._status.update(
+                workflow=target,
+                reason=(
+                    "已切换到 Kalibr Camera+IMU"
+                    if target == "kalibr"
+                    else "已切换到 OpenCV Chessboard"
+                ),
+            )
+        return {"ok": True}
+
+    def artifacts(self) -> dict[str, str]:
+        if self._kalibr_controller is None:
+            return {}
+        return self._kalibr_controller.artifacts()
+
+    def artifact_path(self, key: str) -> Path:
+        if self._kalibr_controller is None:
+            raise ValueError("非法产物")
+        return self._kalibr_controller.artifact_path(key)
 
     def _run(self) -> None:
         candidate_since: Optional[float] = None
@@ -228,6 +294,7 @@ class HeadlessCalibrationEngine:
         pattern = (int(self.config["board"]["columns"]), int(self.config["board"]["rows"]))
         stable_seconds = float(self.config["capture"]["stable_seconds"])
         target = int(self.config["capture"]["target_pairs"])
+        frame_idx = 0
         try:
             while not self._stop_event.is_set():
                 state = str(self.status_snapshot()["state"])
@@ -271,6 +338,22 @@ class HeadlessCalibrationEngine:
                     self._profile,
                     bool(self.config["device"].get("swap_eyes", False)),
                 )
+                if self._workflow == "kalibr" and self._kalibr_controller is not None:
+                    kalibr = self._kalibr_controller.snapshot()
+                    if kalibr.get("state") == "recording":
+                        self._kalibr_controller.ingest(
+                            frame, left, right, frame_idx
+                        )
+                    frame_idx += 1
+                    self._update_preview(left, right, None, None, pattern)
+                    with self._lock:
+                        self._status.update(
+                            state="capturing",
+                            reason=f"Kalibr: {kalibr.get('state', 'ready')}",
+                            stable_progress=0.0,
+                            guidance="持续移动并倾斜棋盘，同时绕 X/Y/Z 三轴转动相机",
+                        )
+                    continue
                 with self._lock:
                     manual_requested = self._manual_requests > 0
                 if manual_requested:
@@ -337,6 +420,8 @@ class HeadlessCalibrationEngine:
                         guidance=manual_guidance(manual_pairs, target),
                     )
         except Exception as error:
+            if self._workflow == "kalibr" and self._kalibr_controller is not None:
+                self._kalibr_controller.abort(str(error))
             with self._lock:
                 self._status.update(state="error", reason="采集失败", error=str(error))
         finally:

@@ -40,14 +40,27 @@ class FakeEngine:
 
     def action(self, name):
         self.actions.append(name)
-        if name not in {"pause", "resume", "undo", "solve", "stop", "manual_capture", "auto_on", "auto_off"}:
+        if name not in {"pause", "resume", "undo", "solve", "stop", "manual_capture", "auto_on", "auto_off", "mode_opencv", "mode_kalibr", "kalibr_start", "kalibr_stop", "kalibr_validate", "kalibr_solve"}:
             return {"ok": False, "error": "不支持的操作"}
         return {"ok": True}
+
+    def artifacts(self):
+        return {"summary": "summary.json"}
+
+    def artifact_path(self, key):
+        if key != "summary":
+            raise ValueError("非法产物")
+        return self.artifact_file
 
 
 @pytest.fixture
 def running_server():
     engine = FakeEngine()
+    import tempfile
+    from pathlib import Path
+    temporary = tempfile.TemporaryDirectory()
+    engine.artifact_file = Path(temporary.name) / "summary.json"
+    engine.artifact_file.write_text('{"ok": true}', encoding="utf-8")
     server = create_server(engine, "127.0.0.1", 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -56,6 +69,7 @@ def running_server():
     server.shutdown()
     server.server_close()
     thread.join(timeout=2)
+    temporary.cleanup()
 
 
 def post_json(url, payload):
@@ -92,6 +106,9 @@ def test_home_page_contains_preview_and_controls(running_server):
     assert "auto_on" in html
     assert "停止服务" not in html
     assert "act('stop')" not in html
+    assert "OpenCV Chessboard" in html
+    assert "Kalibr Camera+IMU" in html
+    assert "kalibr_start" in html and "kalibr_solve" in html
 
 
 def test_status_endpoint_returns_engine_snapshot(running_server):
@@ -140,3 +157,23 @@ def test_mjpeg_stream_starts_with_frame_boundary(running_server):
 
     assert b"--frame" in first_bytes
     assert b"Content-Type: image/jpeg" in first_bytes
+
+
+def test_artifact_list_and_download(running_server):
+    _, base_url = running_server
+
+    artifacts = json.load(urlopen(base_url + "/api/artifacts", timeout=2))
+    response = urlopen(base_url + "/artifact/summary", timeout=2)
+
+    assert artifacts == {"summary": "summary.json"}
+    assert response.read() == b'{"ok": true}'
+    assert response.headers["Content-Disposition"] == 'attachment; filename="summary.json"'
+
+
+def test_invalid_artifact_is_rejected(running_server):
+    _, base_url = running_server
+
+    with pytest.raises(HTTPError) as captured:
+        urlopen(base_url + "/artifact/../../etc/passwd", timeout=2)
+
+    assert captured.value.code == 404
