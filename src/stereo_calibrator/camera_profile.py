@@ -12,6 +12,7 @@ from .sbs import split_sbs
 WORLD_INTELLIGENT_LABEL = "world intelligent"
 WORLD_INTELLIGENT_SIZE = (4000, 1200)
 WORLD_INTELLIGENT_BAND_WIDTH = 160
+WORLD_INTELLIGENT_DEVICE_NAMES = ("decxin camera", "slzh usb3.0 camera")
 
 
 @dataclass(frozen=True)
@@ -37,7 +38,8 @@ def has_world_intelligent_code_band(frame: np.ndarray) -> bool:
 def detect_camera_profile(
     device_name: str, frame: np.ndarray, mode: CameraMode
 ) -> CameraProfile:
-    is_name = "decxin camera" in device_name.casefold()
+    normalized_name = device_name.casefold()
+    is_name = any(name in normalized_name for name in WORLD_INTELLIGENT_DEVICE_NAMES)
     is_size = (
         frame is not None
         and frame.shape[:2] == (WORLD_INTELLIGENT_SIZE[1], WORLD_INTELLIGENT_SIZE[0])

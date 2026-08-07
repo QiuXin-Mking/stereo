@@ -13,9 +13,13 @@ def world_frame():
     return frame
 
 
-def test_three_matching_conditions_assign_world_intelligent():
+@pytest.mark.parametrize(
+    "device_name",
+    ["DECXIN Camera: DECXIN Camera", "SLZH USB3.0 Camera : SLZH USB3.0 Camera"],
+)
+def test_three_matching_conditions_assign_world_intelligent(device_name):
     profile = detect_camera_profile(
-        "DECXIN Camera: DECXIN Camera",
+        device_name,
         world_frame(),
         CameraMode(4000, 1200, 30, "MJPG"),
     )

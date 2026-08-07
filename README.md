@@ -19,7 +19,7 @@
 
 平台仅在以下三项全部满足时设置设备标签 `world intelligent`：
 
-1. V4L2 设备名称包含 `DECXIN Camera`。
+1. V4L2 设备名称包含 `DECXIN Camera` 或现场实测的 `SLZH USB3.0 Camera`。
 2. 原始分辨率严格等于 `4000×1200`。
 3. 左侧 `160` 像素通过码带特征检测。
 
