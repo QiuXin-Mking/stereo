@@ -1,0 +1,88 @@
+FROM ros:noetic-ros-core-focal AS builder
+
+ARG KALIBR_COMMIT=1f60227442d25e36365ef5f72cd80b9666d73467
+ARG BUILD_JOBS=2
+ARG UBUNTU_MIRROR=https://mirrors.aliyun.com/ubuntu-ports
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN sed -i "s|http://ports.ubuntu.com/ubuntu-ports|${UBUNTU_MIRROR}|g" /etc/apt/sources.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+      git ca-certificates autoconf automake \
+      python3-dev python3-pip python3-scipy python3-matplotlib \
+      python3-tk python3-igraph python3-pyx \
+      python3-catkin-tools python3-osrf-pycommon \
+      libeigen3-dev libboost-all-dev libsuitesparse-dev \
+      doxygen libopencv-dev libpoco-dev libtbb-dev \
+      libblas-dev liblapack-dev libv4l-dev \
+      ros-noetic-rosbag ros-noetic-sensor-msgs \
+      ros-noetic-cv-bridge ros-noetic-image-transport \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /opt/kalibr/src \
+    && git clone https://github.com/ethz-asl/kalibr.git /opt/kalibr/src/kalibr \
+    && git -C /opt/kalibr/src/kalibr checkout "$KALIBR_COMMIT" \
+    && test "$(git -C /opt/kalibr/src/kalibr rev-parse HEAD)" = "$KALIBR_COMMIT"
+
+RUN . /opt/ros/noetic/setup.sh \
+    && cd /opt/kalibr \
+    && catkin init \
+    && catkin config --extend /opt/ros/noetic \
+         --install --install-space /opt/kalibr/install \
+         --cmake-args -DCMAKE_BUILD_TYPE=Release \
+    && catkin build -j"$BUILD_JOBS" -p"$BUILD_JOBS"
+
+
+FROM ros:noetic-ros-core-focal AS runtime
+
+ARG UBUNTU_MIRROR=https://mirrors.aliyun.com/ubuntu-ports
+ENV DEBIAN_FRONTEND=noninteractive
+RUN sed -i "s|http://ports.ubuntu.com/ubuntu-ports|${UBUNTU_MIRROR}|g" /etc/apt/sources.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+      python3-scipy python3-matplotlib python3-igraph python3-pyx python3-opencv python3-pil \
+      libboost-python1.71.0 libboost-filesystem1.71.0 \
+      libboost-system1.71.0 libboost-thread1.71.0 \
+      libsuitesparseconfig5 libcholmod3 libspqr2 libumfpack5 \
+      libpocofoundation62 libtbb2 libblas3 liblapack3 libv4l-0 \
+      ros-noetic-rosbag ros-noetic-sensor-msgs \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/kalibr/install /opt/kalibr/install
+COPY --from=builder /opt/kalibr/devel/lib/libkalibr_errorterms.so /opt/kalibr/install/lib/libkalibr_errorterms.so
+COPY --from=builder /opt/ros/noetic/lib/libcv_bridge.so /opt/ros/noetic/lib/libcv_bridge.so
+COPY --from=builder /opt/ros/noetic/lib/python3/dist-packages/cv_bridge /opt/ros/noetic/lib/python3/dist-packages/cv_bridge
+COPY kalibr_runtime/scripts/PlotCollection.py /opt/kalibr/install/lib/python3/dist-packages/sm/PlotCollection.py
+COPY kalibr_runtime/scripts/build_bag.py /opt/kalibr-tools/build_bag.py
+COPY kalibr_runtime/scripts/summarize.py /opt/kalibr-tools/summarize.py
+COPY kalibr_runtime/scripts/run_pipeline.sh /opt/kalibr-tools/run_pipeline.sh
+
+RUN chmod 0555 /opt/kalibr-tools/*.py /opt/kalibr-tools/run_pipeline.sh \
+    && sed -i '1i import cv2' \
+         /opt/ros/noetic/lib/python3/dist-packages/cv_bridge/__init__.py \
+    && cd /opt/kalibr/install/lib/python3/dist-packages \
+    && for module in aslam_backend_python aslam_cameras_april_python \
+         aslam_cv_backend_python aslam_cv_python aslam_splines_python \
+         bsplines_python incremental_calibration_python \
+         kalibr_errorterms_python sm_python; do \
+         target=${module%_python}; \
+         ln -s ../$module/lib$module.so $target/lib$module.so; \
+         ln -s $module/lib$module.so lib$module.so; \
+       done \
+    && ln -s /opt/kalibr/install/lib/kalibr/kalibr_calibrate_cameras \
+         /usr/local/bin/kalibr_calibrate_cameras \
+    && ln -s /opt/kalibr/install/lib/kalibr/kalibr_calibrate_imu_camera \
+         /usr/local/bin/kalibr_calibrate_imu_camera \
+    && useradd --create-home --uid 10001 kalibr \
+    && mkdir -p /data/kalibr \
+    && chown kalibr:kalibr /data/kalibr
+
+ENV PATH=/opt/kalibr/install/bin:/opt/ros/noetic/bin:$PATH
+ENV PYTHONPATH=/opt/kalibr/install/lib/python3/dist-packages:/opt/ros/noetic/lib/python3/dist-packages
+ENV LD_LIBRARY_PATH=/opt/kalibr/install/lib:/opt/ros/noetic/lib
+ENV MPLBACKEND=Agg
+USER kalibr
+WORKDIR /data/kalibr
+ENTRYPOINT ["/opt/kalibr-tools/run_pipeline.sh"]
