@@ -123,7 +123,7 @@ def test_stage_file_and_artifact_allow_list(tmp_path):
     dataset = tmp_path / "session-1/kalibr"
     (dataset / "summary.json").write_text("{}", encoding="utf-8")
     (dataset / "stage.json").write_text(
-        json.dumps({"state": "pass", "message": "done"}), encoding="utf-8"
+        json.dumps({"stage": "pass", "message": "done"}), encoding="utf-8"
     )
 
     assert controller.snapshot()["state"] == "pass"

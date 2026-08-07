@@ -186,7 +186,7 @@ class KalibrController:
         if stage_path.is_file():
             try:
                 stage = json.loads(stage_path.read_text(encoding="utf-8"))
-                state = str(stage.get("state", ""))
+                state = str(stage.get("stage", stage.get("state", "")))
                 if state in PIPELINE_STATES:
                     self._state = state
                 if state == "error":
