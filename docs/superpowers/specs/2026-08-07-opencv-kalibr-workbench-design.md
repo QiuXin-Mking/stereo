@@ -5,7 +5,7 @@
 将现有 RK3588 双目棋盘标定网页升级为两种可选工作流：
 
 1. **OpenCV Chessboard**：保留现有引导式/手动拍摄、双目内外参求解和多格式导出。
-2. **Kalibr Camera+IMU**：连续采集 UVC SBS 图像，从左侧码带解码 IMU，在 Mac Docker 中完成双目相机标定和相机–IMU联合标定。
+2. **Kalibr Camera+IMU**：连续采集 UVC SBS 图像，从左侧码带解码 IMU，在 RK3588 的 ARM64 最小运行环境中完成双目相机标定和相机–IMU联合标定。
 
 最终用户只通过 `http://127.0.0.1:18765/` 一个入口启动采集、查看数据质量、运行求解和获取产物。
 
@@ -17,28 +17,27 @@
 - 验证设备名称、分辨率和左侧 160px 竖向码带，标记为 `world intelligent`。
 - 从每帧左侧码带解码 ICM42688 和 AK09940 数据。
 - 将原始帧裁分为左右 `1920×1200` 图像。
-- 保存连续图像、IMU、曝光时间和会话元数据；向 Mac 提供状态和控制 API。
-- 不在板端安装 ROS 或 Kalibr。
+- 保存连续图像、IMU、曝光时间和会话元数据。
+- 本地构建 ROS bag，并在 ARM64 最小 Kalibr 容器内离线完成相机标定和相机–IMU联合标定。
+- 向网页提供采集、质量检查、求解、日志和产物下载 API。
+- 宿主机不安装 ROS Desktop，不运行 `roscore`、RViz、Gazebo 或其他机器人功能栈。
 
 ### Mac
 
-- 运行本地编排器，监听 `127.0.0.1:18765`。
-- 使用隐藏 SSH 转发端口访问 RK3588 Web/API/MJPEG。
-- 代理现有 RK 界面和 API，并提供 Mac 本地 Kalibr API。
-- 通过 `rsync` 或 `scp` 拉取 Kalibr 数据集。
-- 启动 Docker 完成 ROS bag 构建、Kalibr 求解和结果解析。
-- 将结果摘要和文件链接提供给同一网页。
+- 通过 SSH 隧道将 RK3588 网页映射到 `127.0.0.1:18765`。
+- 显示 RK 返回的采集状态、Kalibr 阶段、日志和结果。
+- 下载标定产物或完整会话备份。
+- 不承担 ROS bag 构建和 Kalibr 求解，Mac 关机或断开浏览器不影响 RK 上已经开始的求解。
 
-## Mac 本地编排器
+## 浏览器入口与隧道
 
-`deploy/start.sh` 从直接将 `18765` 转发到 RK，改为：
+`deploy/start.sh` 保持简单的 SSH 端口转发：
 
-- SSH 隐藏转发：`127.0.0.1:18766 -> RK3588:127.0.0.1:8765`。
-- Mac 编排器：`127.0.0.1:18765`。
-- `/api/kalibr/*` 由 Mac 处理。
-- 其他 HTTP 、动作 API 和 MJPEG 流代理到 `127.0.0.1:18766`。
+- `127.0.0.1:18765 -> RK3588:127.0.0.1:8765`。
+- OpenCV 和 `/api/kalibr/*` 均由 RK 服务处理。
+- MJPEG、动作 API、状态、日志和文件下载经过同一隧道。
 
-编排器必须有独立 PID、日志和健康检查，重复执行 `deploy/start.sh` 不会产生重复进程。
+隧道必须有独立 PID、日志和健康检查，重复执行 `deploy/start.sh` 不会产生重复进程。
 
 ## UI 和状态机
 
@@ -56,14 +55,14 @@
 
 状态依次为：
 
-`ready -> recording -> recorded -> syncing -> bagging -> camera_calibrating -> imu_calibrating -> pass/retake/error`
+`ready -> recording -> recorded -> validating -> bagging -> camera_calibrating -> imu_calibrating -> pass/retake/error`
 
 界面显示：
 
 - 录制时长、左/右图像帧数和实时 FPS。
 - IMU 码带解码成功率、加速度/陀螺仪样本率、时间戳回退和丢包数。
-- 时间同步状态、数据集大小、Docker/Kalibr 阶段、最新日志。
-- 按钮：开始录制、结束录制、同步到 Mac、开始 Kalibr 求解。
+- 时间同步状态、数据集大小、最小运行环境/Kalibr 阶段、最新日志。
+- 按钮：开始录制、结束录制、检查数据、开始 Kalibr 求解。
 - 产物：camchain、IMU–相机外参、时间偏移、PDF 报告、ROS bag 统计和完整日志。
 
 ## IMU 码带解码
@@ -117,15 +116,23 @@ timestamp_ns,omega_x,omega_y,omega_z,alpha_x,alpha_y,alpha_z,frame_idx,t_us
 
 `frames.csv` 保存帧索引、图像时间戳、曝光边界、解码字节数和该帧 IMU 样本数。
 
-## Kalibr Docker
+## RK3588 最小 Kalibr 运行环境
 
-- Mac 为 Apple Silicon，容器显式固定平台和 Kalibr 提交，保证可重现。
-- 首选 Docker Desktop；可以在不改变命令接口的前提下使用 Colima。
-- Docker 中完成数据集到 ROS bag 的转换，不要求 macOS 安装 ROS。
+- 在 RK3588 `arm64` 上运行，不依赖 Mac 求解。
+- 使用多阶段容器：构建阶段包含编译器、catkin 和开发包；运行阶段只复制 Kalibr、ASLAM、Python 模块及必要动态库。
+- ARM64 镜像可在 Apple Silicon Mac 上构建并导入 RK，也可在 RK 上低并发构建；部署完成后 RK 只保留运行镜像，不保留编译工具链和构建缓存。
+- 基础环境锁定兼容 ROS Noetic 的 Ubuntu 20.04 ARM64 用户空间和 Kalibr 提交，避免直接污染当前 Debian 11 宿主机。
+- 只保留 `rosbag`、`sensor_msgs`、`cv_bridge` 等 Kalibr 离线数据入口所需的 ROS 运行组件。
+- 不安装 `ros-noetic-desktop-full`、RViz、Gazebo、导航栈和可视化工具，不启动 `roscore`。
+- 所有求解命令以无界面模式运行；Matplotlib 使用非交互后端。
+- 目标运行镜像约 `1–2 GB`；首次构建后记录实际压缩大小、展开大小和依赖清单，超过 `2 GB` 时继续裁剪非运行依赖。
+- 数据集到 ROS bag 的转换和 Kalibr 求解都在 RK 本地完成。
 - bag topics 固定为 `/cam0/image_raw`、`/cam1/image_raw`、`/imu0`。
 - 目标板使用 Kalibr checkerboard：8×5 内角点，方格 0.020m。
 - IMU 先使用 ICM42688 保守默认噪声参数，产物标记“工程验证参数”。
 - 顺序运行相机链标定和 IMU–相机联合标定；第一步产物作为第二步输入。
+
+容器只是隔离兼容运行库，不是完整 ROS 系统。首版不维护完全去 ROS 的 Kalibr fork；若未来必须取消容器，则另行验证原生运行包及 Debian 11 ABI 兼容性。
 
 ## 快速默认 IMU 参数
 
@@ -169,10 +176,10 @@ timestamp_ns,omega_x,omega_y,omega_z,alpha_x,alpha_y,alpha_z,frame_idx,t_us
 ## 错误处理
 
 - 码带协议不匹配时保留原始帧和诊断图，不产生伪 IMU 样本。
-- 相机或 SSH 断开后停止录制并保留已写入数据，会话标记 incomplete。
-- Docker 服务未启动、镜像不存在或磁盘不足时，在开始求解前报错。
+- 相机断开后停止录制并保留已写入数据，会话标记 incomplete；浏览器或 SSH 隧道断开不影响 RK 上的采集和求解任务。
+- RK Docker 服务未启动、ARM64 最小镜像不存在、可用内存不足或磁盘不足时，在开始求解前报错。
 - Kalibr 任一阶段失败时保留 bag、配置和日志，不覆盖上一次成功结果。
-- 模式切换、录制、同步和求解 API 必须幂等。
+- 模式切换、录制、数据检查和求解 API 必须幂等。
 
 ## 端到端验收
 
@@ -180,14 +187,16 @@ timestamp_ns,omega_x,omega_y,omega_z,alpha_x,alpha_y,alpha_z,frame_idx,t_us
 2. 合成码带单元测试覆盖同步头、阈值、LSB-first、大端整数、旧协议和 32 位时间回绕。
 3. 同一原始帧的 Python 解码字节与 C++ 参考实现一致。
 4. RK3588 实录至少 10 秒，验证图像数、IMU 样本率、解码成功率、单调性和数据文件完整性。
-5. Mac Docker 生成 bag，`rosbag info` 证明三个 topic 及正确频率。
-6. 进行 60–120 秒实际标定录制，顺序完成 camera calibration 和 camera-IMU calibration。
-7. 网页显示通过/需补录结论，并能下载产物。
+5. RK 最小容器生成 bag，`rosbag info` 证明三个 topic 及正确频率。
+6. 记录 ARM64 运行镜像的实际大小和依赖，证明没有 ROS Desktop、RViz、Gazebo，且求解过程未启动 `roscore`。
+7. 断开 Mac 隧道后，RK 上已启动的求解仍能继续并写出状态和日志。
+8. 进行 60–120 秒实际标定录制，顺序完成 camera calibration 和 camera-IMU calibration。
+9. 网页显示通过/需补录结论，并能下载产物。
 
 ## 非目标
 
-- 首版不在 RK3588 安装 ROS/Kalibr。
+- 首版不向 RK3588 Debian 宿主机原生安装 ROS Desktop 或完整 ROS 发行版。
 - 首版不实现完整 Allan variance 长时间噪声标定。
 - 首版不使用磁力计参与 Kalibr 求解。
+- 首版不重写 Kalibr 以彻底移除 catkin、rosbag 和 ROS 消息依赖。
 - 不删除或改写现有 OpenCV 标定产物。
-
