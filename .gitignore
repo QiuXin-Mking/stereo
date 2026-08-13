@@ -1,6 +1,7 @@
 .venv/
 .remote-deps/
 sessions/
+diagnostics/
 __pycache__/
 .pytest_cache/
 .superpowers/
