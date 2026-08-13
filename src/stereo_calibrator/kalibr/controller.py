@@ -179,6 +179,10 @@ class KalibrController:
             status = self._runtime.status(self._container_name)
             if bool(status.get("running", False)):
                 return {"ok": True, "reused": True}
+        if self._state in {"recorded", "retake"}:
+            validation = self._validate()
+            if not bool(validation.get("ok")):
+                return validation
         if self._state != "ready_to_solve":
             raise RuntimeError("数据尚未通过检查，不能求解")
         self._container_name = self._runtime.launch(self.dataset_dir, self.session_id)

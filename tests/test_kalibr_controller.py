@@ -91,6 +91,19 @@ def test_happy_path_and_ingest(tmp_path):
     assert controller.snapshot()["state"] == "bagging"
 
 
+def test_solve_automatically_validates_recorded_dataset(tmp_path):
+    runtime = FakeRuntime()
+    controller = make_controller(tmp_path, runtime=runtime)
+    controller.action("kalibr_start")
+    controller.action("kalibr_stop")
+
+    result = controller.action("kalibr_solve")
+
+    assert result == {"ok": True}
+    assert controller.snapshot()["state"] == "bagging"
+    assert runtime.launches == 1
+
+
 def test_stop_waits_for_inflight_ingest_before_closing_recorder(tmp_path):
     entered = threading.Event()
     release = threading.Event()

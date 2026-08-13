@@ -31,6 +31,18 @@ def _checkerboard(offset):
     return image
 
 
+def _aprilgrid(offset):
+    dictionary = cv2.aruco.getPredefinedDictionary(
+        cv2.aruco.DICT_APRILTAG_36h11
+    )
+    board = cv2.aruco.GridBoard((8, 6), 40, 12, dictionary)
+    target = board.generateImage((404, 300), marginSize=8, borderBits=1)
+    image = np.full((900, 1200), 255, np.uint8)
+    x0, y0 = offset
+    image[y0:y0 + target.shape[0], x0:x0 + target.shape[1]] = target
+    return image
+
+
 def make_dataset(root, mutation=None, with_boards=False):
     dataset = root / "kalibr"
     cam0 = dataset / "cam0"
@@ -45,10 +57,10 @@ def make_dataset(root, mutation=None, with_boards=False):
     (dataset / "decoder_stats.json").write_text(
         json.dumps({"decode_ratio": ratio}), encoding="utf-8"
     )
-    positions = ((10, 10), (70, 10), (130, 10), (10, 110), (130, 110))
+    positions = ((20, 20), (398, 20), (776, 20), (20, 570), (776, 570))
     image_count = 60 if with_boards else 1
     for index in range(image_count):
-        image = _checkerboard(positions[index % len(positions)]) if with_boards else np.zeros((8, 8), np.uint8)
+        image = _aprilgrid(positions[index % len(positions)]) if with_boards else np.zeros((8, 8), np.uint8)
         cv2.imwrite(str(cam0 / f"{index}.png"), image)
         cv2.imwrite(str(cam1 / f"{index}.png"), image)
     if mutation == "pair_mismatch":
@@ -101,3 +113,22 @@ def test_validation_accepts_excited_dataset_with_board_coverage(tmp_path):
     assert report.metrics["board_detections"] >= 60
     assert report.metrics["coverage_cells"] >= 5
     assert 299 < report.metrics["imu_rate_hz"] < 301
+
+
+def test_validation_accepts_aprilgrid_used_by_kalibr(tmp_path):
+    dataset = make_dataset(tmp_path)
+    cam0 = dataset / "cam0"
+    cam1 = dataset / "cam1"
+    for path in (*cam0.glob("*.png"), *cam1.glob("*.png")):
+        path.unlink()
+    positions = ((20, 20), (398, 20), (776, 20), (20, 570), (776, 570))
+    for index in range(60):
+        image = _aprilgrid(positions[index % len(positions)])
+        cv2.imwrite(str(cam0 / f"{index}.png"), image)
+        cv2.imwrite(str(cam1 / f"{index}.png"), image)
+
+    report = validate_dataset(dataset, default_config())
+
+    assert report.passed is True
+    assert report.metrics["board_detections"] >= 60
+    assert report.metrics["coverage_cells"] >= 5

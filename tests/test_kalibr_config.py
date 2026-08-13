@@ -21,11 +21,11 @@ def test_writes_exact_target_and_provisional_imu_yaml(tmp_path):
     imu = yaml.safe_load(paths.imu.read_text())
 
     assert target == {
-        "target_type": "checkerboard",
-        "targetCols": 8,
-        "targetRows": 5,
-        "rowSpacingMeters": 0.020,
-        "colSpacingMeters": 0.020,
+        "target_type": "aprilgrid",
+        "tagCols": 8,
+        "tagRows": 6,
+        "tagSize": 0.020,
+        "tagSpacing": 0.30,
     }
     assert imu["rostopic"] == "/imu0"
     assert imu["update_rate"] == pytest.approx(300.0)

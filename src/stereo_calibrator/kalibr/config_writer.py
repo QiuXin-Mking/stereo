@@ -39,11 +39,11 @@ def write_kalibr_configs(
     pipeline_path = dataset / "pipeline.json"
 
     target = {
-        "target_type": "checkerboard",
-        "targetCols": 8,
-        "targetRows": 5,
-        "rowSpacingMeters": 0.020,
-        "colSpacingMeters": 0.020,
+        "target_type": "aprilgrid",
+        "tagCols": 8,
+        "tagRows": 6,
+        "tagSize": 0.020,
+        "tagSpacing": 0.30,
     }
     imu = {
         "rostopic": "/imu0",
@@ -59,7 +59,13 @@ def write_kalibr_configs(
         "kalibr_commit": KALIBR_COMMIT,
         "topics": ["/cam0/image_raw", "/cam1/image_raw", "/imu0"],
         "camera_models": ["pinhole-radtan", "pinhole-radtan"],
-        "target": {"columns": 8, "rows": 5, "square_size_m": 0.020},
+        "target": {
+            "type": "aprilgrid",
+            "tag_columns": 8,
+            "tag_rows": 6,
+            "tag_size_m": 0.020,
+            "tag_spacing": 0.30,
+        },
         "quality": report.metrics,
         "provisional_imu_noise": True,
     }

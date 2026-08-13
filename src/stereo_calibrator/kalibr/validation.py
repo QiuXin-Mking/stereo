@@ -9,9 +9,6 @@ from typing import Mapping
 import cv2
 import numpy as np
 
-from ..detector import detect_chessboard_with_retry
-
-
 @dataclass(frozen=True)
 class ValidationReport:
     passed: bool
@@ -50,17 +47,31 @@ def _board_coverage(
 ) -> tuple[int, int]:
     detections = 0
     cells: set[tuple[int, int]] = set()
+    dictionary = cv2.aruco.getPredefinedDictionary(
+        cv2.aruco.DICT_APRILTAG_36h11
+    )
+    detector = cv2.aruco.ArucoDetector(dictionary)
     for name in sorted(common_names):
         left = cv2.imread(str(cam0 / name), cv2.IMREAD_GRAYSCALE)
         right = cv2.imread(str(cam1 / name), cv2.IMREAD_GRAYSCALE)
         if left is None or right is None:
             continue
-        left_corners, _ = detect_chessboard_with_retry(left, (8, 5))
-        right_corners, _ = detect_chessboard_with_retry(right, (8, 5))
-        if left_corners is None or right_corners is None:
+        left_corners, left_ids, _ = detector.detectMarkers(left)
+        right_corners, right_ids, _ = detector.detectMarkers(right)
+        if left_ids is None or right_ids is None:
+            continue
+        left_grid_corners = [
+            corners for corners, marker_id in zip(left_corners, left_ids.reshape(-1))
+            if 0 <= int(marker_id) < 48
+        ]
+        right_grid_corners = [
+            corners for corners, marker_id in zip(right_corners, right_ids.reshape(-1))
+            if 0 <= int(marker_id) < 48
+        ]
+        if len(left_grid_corners) < 4 or len(right_grid_corners) < 4:
             continue
         detections += 1
-        center = np.asarray(left_corners).reshape(-1, 2).mean(axis=0)
+        center = np.asarray(left_grid_corners).reshape(-1, 2).mean(axis=0)
         column = min(2, max(0, int(center[0] / left.shape[1] * 3)))
         row = min(2, max(0, int(center[1] / left.shape[0] * 3)))
         cells.add((column, row))
