@@ -13,6 +13,7 @@ IMU_USIZE = 8
 IMU_GROUP = 16
 IMU_TARGET = 272
 IMU_MAX_BYTES = 384
+WORLD_CODE_BAND_WIDTH = 160
 ACC_SENS_MG = 4000.0 / 32768.0
 GYR_SENS_DPS = 1000.0 / 32768.0
 MAG_SENS_UT = 0.15
@@ -119,9 +120,14 @@ def parse_payload(
         sample_count = 11
     if not 1 <= sample_count <= 16:
         raise ValueError(f"IMU payload 样本数非法：{sample_count}")
+    expected_sample_bytes = (1 + sample_count) * IMU_GROUP
+    if len(payload) < expected_sample_bytes:
+        raise ValueError("IMU payload 样本数据不完整")
 
     raw_exp_start = _be_u32(header, 8)
     raw_exp_end = _be_u32(header, 12)
+    if raw_exp_start == 0 or raw_exp_end == 0:
+        raise ValueError("IMU payload 曝光时间无效")
     samples = []
     for index in range(sample_count):
         offset = (1 + index) * IMU_GROUP
@@ -134,6 +140,10 @@ def parse_payload(
         if raw_accel == (-1, -1, -1) or raw_gyro[0] == -32768:
             continue
         timestamp_us = device_clock.unwrap(raw_t_us)
+        if timestamp_us == 0:
+            raise ValueError("IMU payload 样本时间戳无效")
+        if samples and timestamp_us <= samples[-1].timestamp_ns // 1000:
+            raise ValueError("IMU payload 时间戳非单调")
         accel = tuple(value * ACC_SENS_MG * 9.80665 / 1000.0 for value in raw_accel)
         gyro = tuple(value * GYR_SENS_DPS * math.pi / 180.0 for value in raw_gyro)
         samples.append(
@@ -145,6 +155,9 @@ def parse_payload(
                 accel_mps2=accel,
             )
         )
+
+    if not samples:
+        raise ValueError("IMU payload 无有效样本")
 
     anchor_us = (
         samples[-1].timestamp_ns // 1000
@@ -254,7 +267,7 @@ def decode_left_side_payload_bytes(frame: np.ndarray) -> bytes:
         return b""
     decoded = bytearray()
     for row in range(3, height, IMU_USIZE):
-        group = _decode_luma_line(luma[row, :])
+        group = _decode_luma_line(luma[row, :WORLD_CODE_BAND_WIDTH])
         if group:
             remaining = IMU_MAX_BYTES - len(decoded)
             decoded.extend(group[:remaining])
@@ -268,9 +281,13 @@ def decode_vertical_band(
     frame_idx: int,
     clock: Optional[DeviceClock] = None,
 ) -> DecodedImuFrame:
+    # The verified world-intelligent layout is vertical.  Keep the legacy
+    # left-side layout only as an explicit fallback for older recordings.
+    payload = decode_vertical_payload_bytes(frame)
+    if len(payload) >= IMU_GROUP:
+        return parse_payload(payload, frame_idx=frame_idx, clock=clock)
+
     payload = decode_left_side_payload_bytes(frame)
-    if len(payload) < IMU_GROUP:
-        payload = decode_vertical_payload_bytes(frame)
     if len(payload) < IMU_GROUP:
         raise ValueError("IMU payload 未从竖向码带中解出")
     return parse_payload(payload, frame_idx=frame_idx, clock=clock)

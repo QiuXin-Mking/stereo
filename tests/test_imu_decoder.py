@@ -8,6 +8,7 @@ import pytest
 from stereo_calibrator.kalibr.imu_decoder import (
     DeviceClock,
     decode_vertical_band,
+    decode_left_side_payload_bytes,
     decode_vertical_payload_bytes,
     parse_payload,
 )
@@ -36,6 +37,15 @@ def make_payload(
             + bytes((0, 0, 0))
         )
     return payload
+
+
+def make_multi_sample_payload(*timestamps):
+    header = bytearray(16)
+    header[0] = 1
+    header[1] = len(timestamps)
+    header[8:12] = struct.pack(">I", timestamps[0])
+    header[12:16] = struct.pack(">I", timestamps[-1])
+    return bytes(header) + b"".join(_sample_group(timestamp) for timestamp in timestamps)
 
 
 def encode_vertical_band(payload, *, height=1200, width=4000):
@@ -113,6 +123,15 @@ def test_left_side_band_decodes_across_rows_like_real_world_camera():
     assert result.samples[0].raw_t_us == 20_250
 
 
+def test_left_side_decoder_ignores_matching_pattern_outside_code_band():
+    payload = make_payload(exp_start=30_000, exp_end=30_500, t_us=30_250)
+    frame = encode_left_side_band(payload)
+    shifted = np.full_like(frame, 255)
+    shifted[:, 300:] = frame[:, : frame.shape[1] - 300]
+
+    assert decode_left_side_payload_bytes(shifted) == b""
+
+
 def test_magnetometer_is_decoded_for_diagnostics():
     result = parse_payload(
         make_payload(include_mag=True), frame_idx=9, clock=DeviceClock()
@@ -127,6 +146,20 @@ def test_magnetometer_is_decoded_for_diagnostics():
 def test_invalid_payload_is_rejected():
     with pytest.raises(ValueError, match="IMU payload"):
         parse_payload(b"short", frame_idx=0, clock=DeviceClock())
+
+
+def test_all_zero_payload_is_rejected_as_false_positive():
+    with pytest.raises(ValueError, match="IMU payload"):
+        parse_payload(bytes(32), frame_idx=0, clock=DeviceClock())
+
+
+def test_non_monotonic_sample_timestamps_are_rejected():
+    with pytest.raises(ValueError, match="时间戳非单调"):
+        parse_payload(
+            make_multi_sample_payload(1_500, 1_500),
+            frame_idx=0,
+            clock=DeviceClock(),
+        )
 
 
 def test_python_payload_bytes_equal_cpp_reference(tmp_path):

@@ -255,6 +255,8 @@ class HeadlessCalibrationEngine:
         target = "kalibr" if name == "mode_kalibr" else "opencv"
         if target == "kalibr" and self._kalibr_controller is None:
             return {"ok": False, "error": "Kalibr 运行时未配置"}
+        if target == "kalibr" and self._profile is not None and self._profile.split_kind != "world":
+            return {"ok": False, "error": "当前相机没有可用 IMU 码带"}
         with self._lock:
             if str(self._status.get("state")) == "solving":
                 return {"ok": False, "error": "求解进行中，不能切换模式"}

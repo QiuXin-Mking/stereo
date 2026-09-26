@@ -5,6 +5,8 @@ import numpy as np
 
 import stereo_calibrator.headless as headless
 from stereo_calibrator.headless import HeadlessCalibrationEngine
+from stereo_calibrator.camera_profile import CameraProfile
+from stereo_calibrator.camera_backend import CameraMode
 from stereo_calibrator.models import PoseFeatures, QualityDecision
 
 
@@ -103,6 +105,21 @@ def test_solve_is_rejected_below_twenty_pairs(tmp_path):
     response = engine.action("solve")
 
     assert response == {"ok": False, "error": "至少需要 20 对图像"}
+
+
+def test_kalibr_mode_is_rejected_for_generic_camera(tmp_path):
+    config = make_config()
+    config["kalibr"] = {"image_stride": 3}
+    engine = HeadlessCalibrationEngine(
+        config, tmp_path, 0.020, "/dev/video0", camera=FakeCamera(),
+        kalibr_controller=FakeKalibrController(),
+    )
+    engine._profile = CameraProfile(
+        "generic stereo", CameraMode(4000, 1200, 30.0, "MJPG"),
+        (2000, 1200), "不适用", "equal",
+    )
+
+    assert engine.action("mode_kalibr") == {"ok": False, "error": "当前相机没有可用 IMU 码带"}
 
 
 def test_solve_accepts_twenty_saved_manual_pairs(tmp_path):
