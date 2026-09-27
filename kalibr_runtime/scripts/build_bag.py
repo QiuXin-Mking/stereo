@@ -176,6 +176,22 @@ def prepare_filtered_dataset(
         values = sorted(int(item[f"{eye}_tags"]) for item in observations)
         report[f"min_{eye}_tags"] = values[0] if values else 0
         report[f"p50_{eye}_tags"] = values[len(values) // 2] if values else 0
+    manifest_path = output / "dataset_manifest.json"
+    manifest: dict[str, object] = {}
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            manifest = {}
+    manifest.update({
+        "source_dataset": str(source),
+        "filtered_dataset": str(output),
+        "filter_report": str(output / "filter_report.json"),
+        "filter_rule": "DICT_APRILTAG_36h11; both eyes >= 6 tags",
+    })
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     (output / "filter_report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -200,6 +216,8 @@ def load_events(dataset: Path):
 
 def build_bag(dataset: Path, output: Path) -> dict[str, object]:
     filtered_dataset, filter_report = prepare_filtered_dataset(dataset)
+    if int(filter_report["kept_pairs"]) == 0:
+        raise ValueError("AprilGrid 预检后没有满足每眼至少 6 个 Tag 的双目观测")
     counts = {"/cam0/image_raw": 0, "/cam1/image_raw": 0, "/imu0": 0}
     first_stamp = None
     last_stamp = None
