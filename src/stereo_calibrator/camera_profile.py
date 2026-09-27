@@ -12,7 +12,16 @@ from .sbs import split_sbs
 WORLD_INTELLIGENT_LABEL = "world intelligent"
 WORLD_INTELLIGENT_SIZE = (4000, 1200)
 WORLD_INTELLIGENT_BAND_WIDTH = 160
-WORLD_INTELLIGENT_DEVICE_NAMES = ("decxin camera", "slzh usb3.0 camera")
+# The deployed Kilen LynxEye T1 reports its V4L2 name instead of the
+# historical DECXIN/SLZH aliases.  All of these devices share the same
+# verified 4000x1200 + 160 px left-band layout, so they must take the world
+# profile once the frame-level band check succeeds.
+WORLD_INTELLIGENT_DEVICE_NAMES = (
+    "decxin camera",
+    "slzh usb3.0 camera",
+    "kilen lynxeye t1",
+    "lynxeye t1",
+)
 
 
 @dataclass(frozen=True)

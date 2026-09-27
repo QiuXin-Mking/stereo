@@ -15,7 +15,11 @@ def world_frame():
 
 @pytest.mark.parametrize(
     "device_name",
-    ["DECXIN Camera: DECXIN Camera", "SLZH USB3.0 Camera : SLZH USB3.0 Camera"],
+    [
+        "DECXIN Camera: DECXIN Camera",
+        "SLZH USB3.0 Camera : SLZH USB3.0 Camera",
+        "Kilen LynxEye T1: Kilen LynxEye T1",
+    ],
 )
 def test_three_matching_conditions_assign_world_intelligent(device_name):
     profile = detect_camera_profile(
