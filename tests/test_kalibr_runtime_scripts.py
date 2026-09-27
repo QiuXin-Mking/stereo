@@ -1,7 +1,11 @@
 import json
 import importlib.util
+import sys
+import types
 from pathlib import Path
 
+import cv2
+import numpy as np
 import pytest
 import yaml
 
@@ -38,6 +42,55 @@ def test_bag_builder_writes_three_topics_without_ros_master():
     assert 'bag.write("/cam1/image_raw"' in text
     assert 'bag.write("/imu0"' in text
     assert "rospy.init_node" not in text
+
+
+def test_aprilgrid_preflight_filters_bad_pairs_without_ros(tmp_path, monkeypatch):
+    """The preflight is pure filesystem/OpenCV logic and is testable off-board."""
+    rosbag_stub = types.ModuleType("rosbag")
+    rosbag_stub.Bag = object
+    rospy_stub = types.ModuleType("rospy")
+    rospy_stub.Time = object
+    sensor_msgs = types.ModuleType("sensor_msgs")
+    sensor_msgs_msg = types.ModuleType("sensor_msgs.msg")
+    sensor_msgs_msg.Image = type("Image", (), {})
+    sensor_msgs_msg.Imu = type("Imu", (), {})
+    monkeypatch.setitem(sys.modules, "rosbag", rosbag_stub)
+    monkeypatch.setitem(sys.modules, "rospy", rospy_stub)
+    monkeypatch.setitem(sys.modules, "sensor_msgs", sensor_msgs)
+    monkeypatch.setitem(sys.modules, "sensor_msgs.msg", sensor_msgs_msg)
+    path = Path("kalibr_runtime/scripts/build_bag.py").resolve()
+    spec = importlib.util.spec_from_file_location("kalibr_build_bag_test", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    source = tmp_path / "kalibr"
+    (source / "cam0").mkdir(parents=True)
+    (source / "cam1").mkdir()
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+    board = cv2.aruco.GridBoard((8, 6), 30, 9, dictionary)
+    good = board.generateImage((640, 480), marginSize=8, borderBits=1)
+    bad = np.zeros_like(good)
+    for index, image in enumerate((good, bad)):
+        cv2.imwrite(str(source / "cam0" / f"{index}.png"), image)
+        cv2.imwrite(str(source / "cam1" / f"{index}.png"), image)
+    (source / "frames.csv").write_text(
+        "frame_idx,image_timestamp_ns,exp_start_ns,exp_end_ns,payload_bytes,imu_count,cam0_path,cam1_path\n"
+        "0,100,0,0,0,0,cam0/0.png,cam1/0.png\n"
+        "1,200,0,0,0,0,cam0/1.png,cam1/1.png\n",
+        encoding="utf-8",
+    )
+    (source / "imu0.csv").write_text("timestamp_ns\n", encoding="utf-8")
+
+    filtered, report = module.prepare_filtered_dataset(source)
+
+    assert report["source_pairs"] == 2
+    assert report["kept_pairs"] == 1
+    assert report["dropped_pairs"] == 1
+    assert (filtered / "cam0/0.png").is_file()
+    assert not (filtered / "cam0/1.png").is_file()
+    assert json.loads((filtered / "filter_report.json").read_text()) == report
+    assert (source / "cam0/1.png").is_file()
 
 
 def test_summary_normalizes_stereo_and_imu_transforms(tmp_path):
