@@ -102,6 +102,8 @@ class HeadlessCalibrationEngine:
         self._stop_event = threading.Event()
         self._solve_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._four_eye_camera = None
+        self._four_eye_thread: Optional[threading.Thread] = None
         self._accepted: List[AcceptedPair] = []
         self._manual_requests = 0
         self._manual_burst = []
@@ -155,11 +157,18 @@ class HeadlessCalibrationEngine:
             raise RuntimeError("采集引擎已经启动")
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self._prime_four_eye_stream()
-        if self._camera is None:
-            self._device_name = linux_camera_name(self.device)
-            self._camera, self._selected_mode = open_first_supported_linux_camera(
-                self.device, SUPPORTED_RK3588_MODES
-            )
+        # The vendor sequence is strict: the four-eye stream must already be
+        # running (not merely opened) before the stereo device is opened.
+        self._start_four_eye_drain()
+        try:
+            if self._camera is None:
+                self._device_name = linux_camera_name(self.device)
+                self._camera, self._selected_mode = open_first_supported_linux_camera(
+                    self.device, SUPPORTED_RK3588_MODES
+                )
+        except Exception:
+            self._close_four_eye_stream()
+            raise
         with self._lock:
             self._status.update(state="capturing", reason="等待棋盘")
         self._thread = threading.Thread(target=self._run, name="calibration-capture", daemon=True)
@@ -171,6 +180,13 @@ class HeadlessCalibrationEngine:
         if not four_eye:
             return
         cap = cv2.VideoCapture(str(four_eye), cv2.CAP_V4L2)
+        # Kilen LynxEye F1's synchronized four-eye stream. Using OpenCV's
+        # default mode can consume the wrong USB bandwidth and prevent the T1
+        # stereo node from delivering frames.
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 3104)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_FPS, 30)
         info: dict[str, object] = {
             "order": [str(four_eye), str(self.device)],
             "four_eye_device": str(four_eye),
@@ -186,9 +202,41 @@ class HeadlessCalibrationEngine:
             info["four_eye_first"] = True
             info["first_frame_monotonic"] = time.monotonic()
             if self._kalibr_controller is not None:
-                self._kalibr_controller.set_startup_info(info)
-        finally:
+                setter = getattr(self._kalibr_controller, "set_startup_info", None)
+                if callable(setter):
+                    setter(info)
+            # The stream must remain active for the whole stereo capture. Releasing
+            # it here makes the hardware stop emitting the IMU code band.
+            self._four_eye_camera = cap
+        except Exception:
             cap.release()
+            raise
+
+    def _start_four_eye_drain(self) -> None:
+        if self._four_eye_camera is None:
+            return
+
+        def drain() -> None:
+            while not self._stop_event.is_set():
+                ok, _frame = self._four_eye_camera.read()
+                if not ok:
+                    time.sleep(0.01)
+
+        self._four_eye_thread = threading.Thread(
+            target=drain, name="four-eye-drain", daemon=True
+        )
+        self._four_eye_thread.start()
+
+    def _close_four_eye_stream(self) -> None:
+        self._stop_event.set()
+        if self._four_eye_thread is not None:
+            self._four_eye_thread.join(timeout=0.5)
+        if self._four_eye_camera is not None:
+            self._four_eye_camera.release()
+            self._four_eye_camera = None
+        if self._four_eye_thread is not None:
+            self._four_eye_thread.join(timeout=0.5)
+            self._four_eye_thread = None
 
     def join(self, timeout: Optional[float] = None) -> None:
         if self._thread is not None:
@@ -455,6 +503,7 @@ class HeadlessCalibrationEngine:
         finally:
             if self._camera is not None:
                 self._camera.release()
+            self._close_four_eye_stream()
 
     def _save_pair(
         self, frame, left, right, left_corners, right_corners, decision, slot: str

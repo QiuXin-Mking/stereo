@@ -360,6 +360,39 @@ def test_mode_switch_is_rejected_while_kalibr_is_recording(tmp_path):
     assert "进行中" in response["error"]
 
 
+def test_four_eye_stream_is_kept_alive_and_drained_until_stop(tmp_path, monkeypatch):
+    class FourEyeCamera(FakeCamera):
+        def __init__(self):
+            super().__init__()
+            self.reads = 0
+
+        def isOpened(self):
+            return True
+
+        def read(self):
+            self.reads += 1
+            time.sleep(0.001)
+            return True, np.zeros((480, 3104, 3), dtype=np.uint8)
+
+    four_eye = FourEyeCamera()
+    monkeypatch.setattr(headless.cv2, "VideoCapture", lambda *_args: four_eye)
+    config = make_config()
+    config["device"]["four_eye_device"] = "/dev/video6"
+    engine = HeadlessCalibrationEngine(
+        config, tmp_path, 0.020, "/dev/video4", camera=FakeCamera()
+    )
+
+    engine.start()
+    deadline = time.monotonic() + 1
+    while four_eye.reads < 3 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    engine.action("stop")
+    engine.join(2)
+
+    assert four_eye.reads >= 3
+    assert four_eye.released is True
+
+
 def test_camera_failure_aborts_kalibr_recording(tmp_path):
     controller = FakeKalibrController()
     camera = FakeCamera()
