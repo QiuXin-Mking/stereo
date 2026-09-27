@@ -8,6 +8,7 @@ __pycache__/
 examples/cpp/build/
 deploy/.runtime/
 *.pyc
+.DS_Store
 kalibr_runtime/*.tar
 kalibr_runtime/*.tar.zst
 kalibr_runtime/*.sha256
