@@ -51,13 +51,29 @@ def _board_coverage(
         cv2.aruco.DICT_APRILTAG_36h11
     )
     detector = cv2.aruco.ArucoDetector(dictionary)
-    for name in sorted(common_names):
+    names = sorted(common_names)
+    # Keep validation bounded on RK3588 while preserving temporal/spatial
+    # coverage: a long recording commonly contains hundreds of saved images,
+    # but the gate only needs 60 valid stereo observations.
+    if len(names) > 90:
+        indices = np.linspace(0, len(names) - 1, 90, dtype=int)
+        names = [names[int(index)] for index in indices]
+    for name in names:
         left = cv2.imread(str(cam0 / name), cv2.IMREAD_GRAYSCALE)
         right = cv2.imread(str(cam1 / name), cv2.IMREAD_GRAYSCALE)
         if left is None or right is None:
             continue
         left_corners, left_ids, _ = detector.detectMarkers(left)
         right_corners, right_ids, _ = detector.detectMarkers(right)
+        # The 1920x1200 stored eye images make AprilGrid tags small enough that
+        # the native detector can miss most of them. Retry at 1.5x only when
+        # the first pass cannot establish a usable grid.
+        if left_ids is None or len(left_ids) < 4:
+            scaled = cv2.resize(left, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+            left_corners, left_ids, _ = detector.detectMarkers(scaled)
+        if right_ids is None or len(right_ids) < 4:
+            scaled = cv2.resize(right, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+            right_corners, right_ids, _ = detector.detectMarkers(scaled)
         if left_ids is None or right_ids is None:
             continue
         left_grid_corners = [
@@ -160,9 +176,9 @@ def validate_dataset(
 
     board_detections, coverage_cells = _board_coverage(cam0, cam1, common_names)
     if board_detections < 60:
-        reasons.append("双眼同时检测到棋盘的图像少于 60 帧")
+        reasons.append("双眼同时检测到 AprilGrid 的图像少于 60 帧")
     if coverage_cells < 5:
-        reasons.append("棋盘视场覆盖不足 5 个区域")
+        reasons.append("AprilGrid 视场覆盖不足 5 个区域")
 
     metrics: dict[str, float | int | bool] = {
         "duration_seconds": duration,
