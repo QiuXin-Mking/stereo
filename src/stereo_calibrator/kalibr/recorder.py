@@ -331,8 +331,15 @@ class KalibrRecorder:
             reasons.append("frames.csv 无法读取")
         if referenced_missing:
             reasons.append(f"frames.csv 引用的图像不存在：{referenced_missing} 项")
-        if frame_rows != self._total_frames:
-            reasons.append(f"frames.csv 行数 {frame_rows} 与总帧数 {self._total_frames} 不一致")
+        # frames.csv represents successfully decoded frames only. Raw frames
+        # rejected by the IMU decoder are counted in total_frames and are
+        # reported separately through decode_ratio/decode_failures; comparing
+        # against total_frames falsely marks every recording with a decode
+        # miss as structurally corrupt.
+        if frame_rows != self._decoded_frames:
+            reasons.append(
+                f"frames.csv 行数 {frame_rows} 与成功解码帧数 {self._decoded_frames} 不一致"
+            )
         if summary.left_images != summary.right_images:
             reasons.append("停止时左右图像计数不一致")
         report = {
@@ -342,6 +349,7 @@ class KalibrRecorder:
             "required_files": {name: (self.dataset_dir / name).is_file() for name in required_files},
             "frame_rows": frame_rows,
             "total_frames": self._total_frames,
+            "decoded_frames": self._decoded_frames,
             "left_images": summary.left_images,
             "right_images": summary.right_images,
             "referenced_missing": referenced_missing,

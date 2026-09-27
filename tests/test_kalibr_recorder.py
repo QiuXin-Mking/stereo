@@ -83,6 +83,26 @@ def test_recorder_omits_duplicate_imu_timestamp(tmp_path):
     assert stats["duplicate_imu_timestamps"] == 1
 
 
+def test_integrity_compares_frames_to_decoded_frames_not_raw_frames(tmp_path):
+    class OneDecodeFailure(FakeDecoder):
+        def __call__(self, frame, frame_idx, clock):
+            if frame_idx == 0:
+                raise ValueError("invalid code band")
+            return super().__call__(frame, frame_idx, clock)
+
+    recorder = KalibrRecorder(tmp_path, decoder=OneDecodeFailure())
+    recorder.start(started_monotonic=0.0)
+    recorder.ingest(raw_frame(), eye(), eye(), 0)
+    recorder.ingest(raw_frame(), eye(), eye(), 1)
+    recorder.stop(stopped_monotonic=2.0)
+
+    integrity = json.loads((tmp_path / "kalibr/integrity.json").read_text())
+    assert integrity["passed"] is True
+    assert integrity["total_frames"] == 2
+    assert integrity["decoded_frames"] == 1
+    assert integrity["frame_rows"] == 1
+
+
 def test_abort_marks_capture_incomplete(tmp_path):
     recorder = KalibrRecorder(tmp_path, decoder=FakeDecoder())
     recorder.start(started_monotonic=10.0)
