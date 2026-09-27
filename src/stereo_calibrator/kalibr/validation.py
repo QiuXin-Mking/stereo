@@ -118,7 +118,18 @@ def validate_dataset(
         reasons.append("左右图像数量不一致")
     decode_ratio = float(decoder.get("decode_ratio", 0.0))
     minimum_ratio = float(config["minimum_decode_ratio"])
-    if decode_ratio < minimum_ratio:
+    decoded_frames = int(decoder.get("decoded_frames", capture.get("decoded_frames", 0)))
+    imu_sample_count = int(decoder.get("imu_samples", capture.get("imu_samples", timestamps.size)))
+    allow_override = bool(config.get("allow_decode_ratio_override", False))
+    minimum_decoded_frames = int(config.get("minimum_decoded_frames", 0))
+    minimum_imu_samples = int(config.get("minimum_imu_samples", 0))
+    decode_ratio_overridden = bool(
+        decode_ratio < minimum_ratio
+        and allow_override
+        and decoded_frames >= minimum_decoded_frames
+        and imu_sample_count >= minimum_imu_samples
+    )
+    if decode_ratio < minimum_ratio and not decode_ratio_overridden:
         reasons.append(f"码带解码成功率低于 {minimum_ratio * 100:g}%")
 
     monotonic = bool(
@@ -158,6 +169,8 @@ def validate_dataset(
         "left_images": len(cam0_names),
         "right_images": len(cam1_names),
         "decode_ratio": decode_ratio,
+        "decoded_frames": decoded_frames,
+        "decode_ratio_overridden": decode_ratio_overridden,
         "imu_samples": int(timestamps.size),
         "imu_rate_hz": imu_rate,
         "timestamps_monotonic": monotonic,
