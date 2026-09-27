@@ -112,6 +112,21 @@ def test_validation_accepts_excited_dataset_with_board_coverage(tmp_path):
     assert report.reasons == ()
     assert report.metrics["board_detections"] >= 60
     assert report.metrics["coverage_cells"] >= 5
+
+
+def test_validation_includes_persisted_integrity_reasons(tmp_path):
+    dataset = make_dataset(tmp_path)
+    (dataset / "integrity.json").write_text(
+        json.dumps({
+            "passed": False,
+            "reasons": ["frames.csv 引用的图像不存在：1 项"],
+        }),
+        encoding="utf-8",
+    )
+    report = validate_dataset(dataset, default_config())
+    assert report.passed is False
+    assert "frames.csv 引用的图像不存在：1 项" in report.reasons
+    assert report.metrics["integrity_passed"] is False
     assert 299 < report.metrics["imu_rate_hz"] < 301
 
 

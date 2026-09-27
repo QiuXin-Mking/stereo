@@ -82,6 +82,14 @@ def validate_dataset(
     dataset_dir: Path, config: Mapping[str, object]
 ) -> ValidationReport:
     dataset = Path(dataset_dir)
+    integrity_path = dataset / "integrity.json"
+    integrity: dict[str, object] = {}
+    if integrity_path.is_file():
+        integrity = _read_json(integrity_path)
+    manifest_path = dataset / "dataset_manifest.json"
+    manifest: dict[str, object] = {}
+    if manifest_path.is_file():
+        manifest = _read_json(manifest_path)
     capture = _read_json(dataset / "capture.json")
     decoder = _read_json(dataset / "decoder_stats.json")
     cam0 = dataset / "cam0"
@@ -92,6 +100,14 @@ def validate_dataset(
     timestamps, gyro, accel = _read_imu(dataset / "imu0.csv")
 
     reasons = []
+    if not manifest_path.is_file():
+        reasons.append("缺少录制清单：dataset_manifest.json")
+    if not integrity_path.is_file():
+        reasons.append("缺少录制完整性报告：integrity.json")
+    elif not bool(integrity.get("passed", False)) and not integrity.get("reasons"):
+        reasons.append("录制完整性检查未通过")
+    integrity_reasons = [str(item) for item in integrity.get("reasons", [])]
+    reasons.extend(integrity_reasons)
     duration = float(capture.get("duration_seconds", 0.0))
     minimum_duration = float(config["minimum_duration_seconds"])
     if not bool(capture.get("complete", False)):
@@ -153,6 +169,8 @@ def validate_dataset(
         "accel_span_z": float(accel_spans[2]),
         "board_detections": board_detections,
         "coverage_cells": coverage_cells,
+        "integrity_passed": bool(integrity.get("passed", False)) if integrity else False,
+        "manifest_present": bool(manifest),
     }
     return ValidationReport(
         passed=not reasons,

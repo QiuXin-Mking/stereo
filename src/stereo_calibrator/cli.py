@@ -52,6 +52,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--swap-eyes", action="store_true", help="交换 SBS 左右半幅")
     parser.add_argument("--web", action="store_true", help="启动 RK3588 无界面浏览器控制台")
     parser.add_argument("--device", default="/dev/video0", help="Linux V4L2 图像节点")
+    parser.add_argument("--four-eye-device", help="先启动并读取的四目 V4L2 节点")
     parser.add_argument("--host", default="0.0.0.0", help="Web 监听地址")
     parser.add_argument("--port", type=int, default=8765, help="Web 监听端口")
     parser.add_argument("--target", type=int, default=32, help="目标自动接收图像对数，默认 32")
@@ -100,6 +101,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         config["device"]["capture_width"] = args.capture_width
         config["device"]["capture_height"] = args.capture_height
     config["device"]["swap_eyes"] = bool(args.swap_eyes)
+    if args.four_eye_device:
+        config["device"]["four_eye_device"] = args.four_eye_device
     config["capture"]["target_pairs"] = args.target
 
     square_mm = args.square_mm

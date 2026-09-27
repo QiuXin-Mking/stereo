@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from datetime import datetime
 import json
 from pathlib import Path
@@ -75,16 +74,33 @@ class KalibrController:
                 if name == "kalibr_solve":
                     return self._solve()
                 return {"ok": False, "error": f"未知 Kalibr 操作：{name}"}
-            except (OSError, RuntimeError, ValueError) as error:
+            except RuntimeError as error:
+                # Preconditions and validation failures are user-correctable. Keep
+                # the dataset available for retake instead of locking the UI.
+                self._error = str(error)
+                # A failure while validating is recoverable too; leaving the
+                # controller in ``validating`` would make the UI permanently
+                # reject both validate and solve actions.
+                if self._state != "recording":
+                    self._state = "retake"
+                self._persist_job()
+                return self._result(False, [self._error])
+            except (OSError, ValueError) as error:
                 self._state = "error"
                 self._error = str(error)
                 self._persist_job()
-                return {"ok": False, "error": self._error}
+                return {"ok": False, "state": self._state, "error": self._error,
+                        "dataset_dir": str(self.dataset_dir)}
 
     def ingest(self, raw_frame, left, right, frame_idx: int) -> None:
         with self._lock:
             if self._state == "recording":
                 self._recorder.ingest(raw_frame, left, right, int(frame_idx))
+
+    def set_startup_info(self, info: Mapping[str, object]) -> None:
+        setter = getattr(self._recorder, "set_startup_info", None)
+        if callable(setter):
+            setter(dict(info))
 
     def abort(self, reason: str) -> None:
         if self._state == "recording":
@@ -153,33 +169,73 @@ class KalibrController:
         if self._state != "recording":
             raise RuntimeError("当前没有正在进行的 Kalibr 录制")
         self._recorder.stop()
-        self._state = "recorded"
+        integrity_path = self.dataset_dir / "integrity.json"
+        integrity = self._read_json(integrity_path) if integrity_path.is_file() else {}
+        # A stop without a final integrity report is never considered a valid
+        # dataset.  Treat it as a retake so a recorder/test double cannot
+        # accidentally bypass the disk-level gate.
+        if not integrity_path.is_file():
+            integrity = {
+                "passed": False,
+                "reasons": ["停止录制后缺少完整性报告：integrity.json"],
+            }
+        self._state = "recorded" if bool(integrity.get("passed", False)) else "retake"
+        self._reasons = [str(item) for item in integrity.get("reasons", [])]
+        self._metrics = {key: value for key, value in integrity.items()
+                         if key not in {"reasons", "passed", "dataset_dir", "required_files"}}
         self._persist_job()
-        return {"ok": True}
+        return self._result(self._state == "recorded", self._reasons)
 
     def _validate(self) -> dict[str, object]:
         if self._state not in {"recorded", "retake"}:
-            raise RuntimeError("请先停止录制再检查数据")
+            return self._result(False, ["请先停止录制再检查数据"])
         self._state = "validating"
-        report = self._validator(self.dataset_dir, self.config)
-        self._reasons = list(report.reasons)
-        self._metrics = dict(report.metrics)
-        self._atomic_json(self.dataset_dir / "validation.json", asdict(report))
-        if not report.passed:
+        try:
+            report = self._validator(self.dataset_dir, self.config)
+        except (OSError, ValueError) as error:
+            # Missing/corrupt capture artifacts are correctable by recording
+            # again.  Keep the state recoverable and persist the same response
+            # contract used by normal quality failures.
+            self._reasons = [str(error)]
+            self._metrics = {}
+            self._atomic_json(
+                self.dataset_dir / "validation.json",
+                {"passed": False, "reasons": self._reasons, "metrics": {}},
+            )
             self._state = "retake"
             self._persist_job()
-            return {"ok": False, "reasons": list(report.reasons)}
+            return self._result(False, self._reasons)
+        self._reasons = list(report.reasons)
+        self._metrics = dict(report.metrics)
+        integrity = self._read_json(self.dataset_dir / "integrity.json")
+        integrity_reasons = [str(item) for item in integrity.get("reasons", [])]
+        if integrity_reasons:
+            self._reasons = integrity_reasons + [r for r in self._reasons if r not in integrity_reasons]
+            self._metrics.update({f"integrity_{k}": v for k, v in integrity.items()
+                                  if k not in {"reasons", "required_files", "dataset_dir"}})
+        self._atomic_json(
+            self.dataset_dir / "validation.json",
+            {"passed": not self._reasons, "reasons": self._reasons, "metrics": self._metrics},
+        )
+        if self._reasons:
+            self._state = "retake"
+            self._persist_job()
+            return self._result(False, self._reasons)
         self._config_writer(self.dataset_dir, report, self.session_id)
         self._state = "ready_to_solve"
         self._persist_job()
-        return {"ok": True}
+        return self._result(True, [])
 
     def _solve(self) -> dict[str, object]:
         if self._container_name:
             status = self._runtime.status(self._container_name)
             if bool(status.get("running", False)):
                 return {"ok": True, "reused": True}
-        if self._state in {"recorded", "retake"}:
+        if self._state in {"recorded", "retake", "ready_to_solve"}:
+            # Always re-read the current manifest and rerun both gates. A stale
+            # validation.json must never authorize launching the runtime.
+            if self._state == "ready_to_solve":
+                self._state = "recorded"
             validation = self._validate()
             if not bool(validation.get("ok")):
                 return validation
@@ -188,7 +244,24 @@ class KalibrController:
         self._container_name = self._runtime.launch(self.dataset_dir, self.session_id)
         self._state = "bagging"
         self._persist_job()
-        return {"ok": True}
+        return self._result(True, [])
+
+    def _result(self, ok: bool, reasons: list[str]) -> dict[str, object]:
+        return {
+            "ok": bool(ok),
+            "state": self._state,
+            "reasons": list(reasons),
+            "metrics": dict(self._metrics),
+            "dataset_dir": str(self.dataset_dir),
+        }
+
+    @staticmethod
+    def _read_json(path: Path) -> dict[str, object]:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
 
     def _poll_pipeline(self) -> None:
         stage_path = self.dataset_dir / "stage.json"
@@ -237,6 +310,8 @@ class KalibrController:
                 "validation_reasons": self._reasons,
                 "validation_metrics": self._metrics,
                 "error": self._error,
+                "dataset_dir": str(self.dataset_dir),
+                "manifest": str(self.dataset_dir / "dataset_manifest.json"),
             },
         )
 

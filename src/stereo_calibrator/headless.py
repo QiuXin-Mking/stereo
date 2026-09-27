@@ -154,6 +154,7 @@ class HeadlessCalibrationEngine:
         if self._thread is not None:
             raise RuntimeError("采集引擎已经启动")
         self.session_dir.mkdir(parents=True, exist_ok=True)
+        self._prime_four_eye_stream()
         if self._camera is None:
             self._device_name = linux_camera_name(self.device)
             self._camera, self._selected_mode = open_first_supported_linux_camera(
@@ -163,6 +164,31 @@ class HeadlessCalibrationEngine:
             self._status.update(state="capturing", reason="等待棋盘")
         self._thread = threading.Thread(target=self._run, name="calibration-capture", daemon=True)
         self._thread.start()
+
+    def _prime_four_eye_stream(self) -> None:
+        """Vendor-required order: read four-eye before opening stereo."""
+        four_eye = self.config.get("device", {}).get("four_eye_device")
+        if not four_eye:
+            return
+        cap = cv2.VideoCapture(str(four_eye), cv2.CAP_V4L2)
+        info: dict[str, object] = {
+            "order": [str(four_eye), str(self.device)],
+            "four_eye_device": str(four_eye),
+            "stereo_device": str(self.device),
+            "four_eye_first": False,
+        }
+        try:
+            if not cap.isOpened():
+                raise RuntimeError(f"四目设备无法打开：{four_eye}")
+            ok, _frame = cap.read()
+            if not ok:
+                raise RuntimeError(f"四目设备首帧读取失败：{four_eye}")
+            info["four_eye_first"] = True
+            info["first_frame_monotonic"] = time.monotonic()
+            if self._kalibr_controller is not None:
+                self._kalibr_controller.set_startup_info(info)
+        finally:
+            cap.release()
 
     def join(self, timeout: Optional[float] = None) -> None:
         if self._thread is not None:

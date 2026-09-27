@@ -79,15 +79,15 @@ def make_controller(tmp_path, runtime=None, validator=lambda *_: passing_report(
 
 def test_happy_path_and_ingest(tmp_path):
     controller = make_controller(tmp_path)
-    assert controller.action("kalibr_start") == {"ok": True}
+    assert controller.action("kalibr_start")["ok"] is True
     assert controller.snapshot()["state"] == "recording"
     frame = np.zeros((4, 4), np.uint8)
     controller.ingest(frame, frame, frame, 1)
     assert controller.snapshot()["total_frames"] == 1
-    assert controller.action("kalibr_stop") == {"ok": True}
-    assert controller.action("kalibr_validate") == {"ok": True}
+    assert controller.action("kalibr_stop")["ok"] is True
+    assert controller.action("kalibr_validate")["ok"] is True
     assert controller.snapshot()["state"] == "ready_to_solve"
-    assert controller.action("kalibr_solve") == {"ok": True}
+    assert controller.action("kalibr_solve")["ok"] is True
     assert controller.snapshot()["state"] == "bagging"
 
 
@@ -99,7 +99,8 @@ def test_solve_automatically_validates_recorded_dataset(tmp_path):
 
     result = controller.action("kalibr_solve")
 
-    assert result == {"ok": True}
+    assert result["ok"] is True
+    assert result["state"] == "bagging"
     assert controller.snapshot()["state"] == "bagging"
     assert runtime.launches == 1
 
@@ -153,7 +154,10 @@ def test_validation_failure_preserves_reasons(tmp_path):
 
     result = controller.action("kalibr_validate")
 
-    assert result == {"ok": False, "reasons": ["码带解码成功率低于 90%"]}
+    assert result["ok"] is False
+    assert result["state"] == "retake"
+    assert result["reasons"] == ["码带解码成功率低于 90%"]
+    assert "dataset_dir" in result and "metrics" in result
     assert controller.snapshot()["state"] == "retake"
     assert controller.snapshot()["validation_reasons"] == ["码带解码成功率低于 90%"]
 
@@ -164,11 +168,12 @@ def test_repeated_solve_reuses_running_job_after_restart(tmp_path):
     controller.action("kalibr_start")
     controller.action("kalibr_stop")
     controller.action("kalibr_validate")
-    assert controller.action("kalibr_solve") == {"ok": True}
+    assert controller.action("kalibr_solve")["ok"] is True
     assert runtime.launches == 1
 
     restored = make_controller(tmp_path, runtime=runtime)
-    assert restored.action("kalibr_solve") == {"ok": True, "reused": True}
+    reused = restored.action("kalibr_solve")
+    assert reused["ok"] is True and reused["reused"] is True
     assert runtime.launches == 1
 
 

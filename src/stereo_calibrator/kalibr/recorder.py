@@ -67,6 +67,10 @@ class KalibrRecorder:
         self._last_imu_timestamp_ns: Optional[int] = None
         self._last_image_timestamp_ns: Optional[int] = None
         self._error: Optional[str] = None
+        self._startup_info: dict[str, object] = {}
+
+    def set_startup_info(self, info: dict[str, object]) -> None:
+        self._startup_info = dict(info)
 
     def start(self, started_monotonic: Optional[float] = None) -> None:
         if self._state != "ready":
@@ -88,6 +92,7 @@ class KalibrRecorder:
             time.monotonic() if started_monotonic is None else float(started_monotonic)
         )
         self._state = "recording"
+        self._write_manifest(complete=False, integrity_passed=False)
 
     def ingest(
         self,
@@ -163,6 +168,8 @@ class KalibrRecorder:
         self._close_files()
         summary = self._summary()
         self._write_metadata(complete=True, error=None, summary=summary)
+        integrity = self._finalize_integrity(summary)
+        self._write_manifest(complete=True, integrity_passed=bool(integrity["passed"]))
         return summary
 
     def abort(
@@ -179,6 +186,7 @@ class KalibrRecorder:
         self._state = "error"
         self._close_files()
         self._write_metadata(complete=False, error=self._error, summary=self._summary())
+        self._write_manifest(complete=False, integrity_passed=False)
 
     def snapshot(self) -> dict[str, object]:
         now = self._stopped_monotonic
@@ -199,6 +207,8 @@ class KalibrRecorder:
             "right_images": self._right_images,
             "imu_samples": self._imu_samples,
             "error": self._error,
+            "dataset_dir": str(self.dataset_dir),
+            "manifest": str(self.dataset_dir / "dataset_manifest.json"),
         }
 
     def _write_image_pair(
@@ -275,6 +285,69 @@ class KalibrRecorder:
         }
         self._atomic_json(self.dataset_dir / "capture.json", capture)
         self._atomic_json(self.dataset_dir / "decoder_stats.json", stats)
+
+    def _write_manifest(self, *, complete: bool, integrity_passed: bool) -> None:
+        payload = {
+            "schema_version": 1,
+            "session_id": self.session_dir.name,
+            "dataset_dir": str(self.dataset_dir.resolve()),
+            "started_monotonic": self._started_monotonic,
+            "stopped_monotonic": self._stopped_monotonic,
+            "state": self._state,
+            "complete": bool(complete),
+            "integrity_passed": bool(integrity_passed),
+            "required_artifacts": [
+                "capture.json", "decoder_stats.json", "imu0.csv", "frames.csv",
+                "cam0", "cam1", "integrity.json",
+            ],
+            "startup": dict(self._startup_info),
+        }
+        self._atomic_json(self.dataset_dir / "dataset_manifest.json", payload)
+
+    def _finalize_integrity(self, summary: CaptureSummary) -> dict[str, object]:
+        reasons: list[str] = []
+        required_files = ("capture.json", "decoder_stats.json", "imu0.csv", "frames.csv")
+        missing = [name for name in required_files if not (self.dataset_dir / name).is_file()]
+        if missing:
+            reasons.append("缺少必需产物：" + ", ".join(missing))
+        for name in ("cam0", "cam1"):
+            if not (self.dataset_dir / name).is_dir():
+                reasons.append(f"缺少图像目录：{name}")
+        left = {p.name for p in (self.dataset_dir / "cam0").glob("*.png")}
+        right = {p.name for p in (self.dataset_dir / "cam1").glob("*.png")}
+        if left != right:
+            reasons.append("左右图像文件不成对")
+        frame_rows = 0
+        referenced_missing = 0
+        try:
+            with (self.dataset_dir / "frames.csv").open(newline="", encoding="utf-8") as handle:
+                for row in csv.DictReader(handle):
+                    frame_rows += 1
+                    for key in ("cam0_path", "cam1_path"):
+                        value = row.get(key, "")
+                        if value and not (self.dataset_dir / value).is_file():
+                            referenced_missing += 1
+        except (OSError, csv.Error):
+            reasons.append("frames.csv 无法读取")
+        if referenced_missing:
+            reasons.append(f"frames.csv 引用的图像不存在：{referenced_missing} 项")
+        if frame_rows != self._total_frames:
+            reasons.append(f"frames.csv 行数 {frame_rows} 与总帧数 {self._total_frames} 不一致")
+        if summary.left_images != summary.right_images:
+            reasons.append("停止时左右图像计数不一致")
+        report = {
+            "passed": not reasons,
+            "reasons": reasons,
+            "dataset_dir": str(self.dataset_dir.resolve()),
+            "required_files": {name: (self.dataset_dir / name).is_file() for name in required_files},
+            "frame_rows": frame_rows,
+            "total_frames": self._total_frames,
+            "left_images": summary.left_images,
+            "right_images": summary.right_images,
+            "referenced_missing": referenced_missing,
+        }
+        self._atomic_json(self.dataset_dir / "integrity.json", report)
+        return report
 
     @staticmethod
     def _atomic_json(path: Path, payload: dict[str, object]) -> None:
