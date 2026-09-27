@@ -86,6 +86,8 @@ HTML_PAGE = """<!doctype html>
       <button onclick="act('kalibr_solve')">开始 Kalibr 求解</button>
     </div>
     <div class="card">质量检查<b id="kalibrReasons">-</b></div>
+    <div class="card">录制数据路径<b id="kalibrDataset" style="font-size:13px;word-break:break-all">-</b></div>
+    <div class="card">录制清单路径<b id="kalibrManifest" style="font-size:13px;word-break:break-all">-</b></div>
     <div class="card">产物下载<div id="artifactLinks">-</div></div>
     <div class="card">Kalibr 日志<pre id="kalibrLog">-</pre></div>
   </div>
@@ -107,6 +109,7 @@ async function refresh() {
     const k=s.kalibr||{}; kalibrState.textContent=show(k.state); kalibrDuration.textContent=(Number(k.duration_seconds||0)).toFixed(1)+' s';
     kalibrPairs.textContent=Math.min(Number(k.left_images||0),Number(k.right_images||0)); kalibrDecode.textContent=(Number(k.decode_ratio||0)*100).toFixed(1)+'%'; kalibrImu.textContent=show(k.imu_samples||0);
     kalibrReasons.textContent=(k.validation_reasons||[]).join('；')||'-'; kalibrLog.textContent=k.logs||'-';
+    kalibrDataset.textContent=show(k.dataset_dir); kalibrManifest.textContent=show(k.manifest);
     const active=['recording','validating','bagging','camera_calibrating','imu_calibrating'].includes(k.state);
     modeOpenCV.disabled=active; modeKalibr.disabled=active;
     const artifacts=k.artifacts||{}; artifactLinks.innerHTML=Object.entries(artifacts).map(([key,name])=>`<a href="/artifact/${encodeURIComponent(key)}">${name}</a>`).join(' &nbsp; ')||'-';
