@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import csv
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 import time
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
 
 import cv2
 import numpy as np
@@ -13,23 +12,13 @@ import numpy as np
 from .imu_decoder import DecodedImuFrame, DeviceClock, decode_vertical_band
 
 
-IMU_HEADER = (
-    "timestamp_ns", "omega_x", "omega_y", "omega_z",
-    "alpha_x", "alpha_y", "alpha_z", "frame_idx", "t_us",
-)
-FRAMES_HEADER = (
-    "frame_idx", "image_timestamp_ns", "exp_start_ns", "exp_end_ns",
-    "payload_bytes", "imu_samples", "cam0_path", "cam1_path",
-)
-
-
 @dataclass(frozen=True)
 class CaptureSummary:
     duration_seconds: float
     total_frames: int
     decoded_frames: int
-    left_images: int
-    right_images: int
+    left_frames: int
+    right_frames: int
     imu_samples: int
     decode_ratio: float
 
@@ -39,35 +28,56 @@ class KalibrRecorder:
         self,
         session_dir: Path,
         decoder: Callable[..., DecodedImuFrame] = decode_vertical_band,
-        image_stride: int = 3,
     ) -> None:
-        if int(image_stride) < 1:
-            raise ValueError("image_stride 必须大于 0")
         self.session_dir = Path(session_dir)
         self.dataset_dir = self.session_dir / "kalibr"
-        self.image_stride = int(image_stride)
         self._decoder = decoder
         self._clock = DeviceClock()
         self._state = "ready"
+        self._codec = "MJPG"
+        self._container = "avi"
+        self._grayscale = True
+        self._fps = 30.0
+        self._jpeg_quality = 95
+        self._display_interval_s = 0.5
+        self._display_samples = 10
         self._started_monotonic: Optional[float] = None
         self._stopped_monotonic: Optional[float] = None
-        self._imu_handle = None
-        self._frames_handle = None
-        self._imu_writer = None
-        self._frames_writer = None
+        self._cam0_writer = None
+        self._cam1_writer = None
+        self._video_width: Optional[int] = None
+        self._video_height: Optional[int] = None
         self._total_frames = 0
         self._decoded_frames = 0
         self._decode_failures = 0
-        self._left_images = 0
-        self._right_images = 0
+        self._left_frames = 0
+        self._right_frames = 0
         self._imu_samples = 0
         self._magnetic_samples = 0
         self._duplicate_imu_timestamps = 0
-        self._duplicate_image_timestamps = 0
         self._last_imu_timestamp_ns: Optional[int] = None
-        self._last_image_timestamp_ns: Optional[int] = None
+        self._imu_records: list[dict] = []
+        self._display_imu: list[dict] = []
+        self._last_display_monotonic: Optional[float] = None
         self._error: Optional[str] = None
         self._startup_info: dict[str, object] = {}
+
+    def configure(self, config: Mapping[str, object]) -> None:
+        video = dict(config.get("video") or {})
+        display = dict(config.get("display") or {})
+        self._codec = str(video.get("codec", self._codec))
+        self._container = str(video.get("container", self._container)).lstrip(".")
+        self._grayscale = bool(video.get("grayscale", self._grayscale))
+        self._fps = float(video.get("fps", self._fps))
+        self._jpeg_quality = int(video.get("jpeg_quality", self._jpeg_quality))
+        self._display_interval_s = float(
+            display.get("interval_s", self._display_interval_s)
+        )
+        self._display_samples = int(display.get("samples", self._display_samples))
+        if self._fps <= 0:
+            raise ValueError("video.fps 必须大于 0")
+        if self._display_samples < 1:
+            raise ValueError("display.samples 必须大于 0")
 
     def set_startup_info(self, info: dict[str, object]) -> None:
         self._startup_info = dict(info)
@@ -76,18 +86,6 @@ class KalibrRecorder:
         if self._state != "ready":
             raise RuntimeError("Kalibr 录制已经开始")
         self.dataset_dir.mkdir(parents=True, exist_ok=False)
-        (self.dataset_dir / "cam0").mkdir()
-        (self.dataset_dir / "cam1").mkdir()
-        self._imu_handle = (self.dataset_dir / "imu0.csv").open(
-            "w", newline="", encoding="utf-8"
-        )
-        self._frames_handle = (self.dataset_dir / "frames.csv").open(
-            "w", newline="", encoding="utf-8"
-        )
-        self._imu_writer = csv.writer(self._imu_handle)
-        self._frames_writer = csv.writer(self._frames_handle)
-        self._imu_writer.writerow(IMU_HEADER)
-        self._frames_writer.writerow(FRAMES_HEADER)
         self._started_monotonic = (
             time.monotonic() if started_monotonic is None else float(started_monotonic)
         )
@@ -104,6 +102,13 @@ class KalibrRecorder:
         if self._state != "recording":
             return
         self._total_frames += 1
+        left_frame = self._gray(left) if self._grayscale else left
+        right_frame = self._gray(right) if self._grayscale else right
+        self._ensure_writers(left_frame)
+        self._cam0_writer.write(left_frame)
+        self._cam1_writer.write(right_frame)
+        self._left_frames += 1
+        self._right_frames += 1
         try:
             decoded = self._decoder(raw_frame, int(frame_idx), self._clock)
         except (RuntimeError, ValueError):
@@ -118,45 +123,10 @@ class KalibrRecorder:
             ):
                 self._duplicate_imu_timestamps += 1
                 continue
-            self._imu_writer.writerow(
-                (
-                    sample.timestamp_ns,
-                    *sample.gyro_rps,
-                    *sample.accel_mps2,
-                    sample.frame_idx,
-                    sample.raw_t_us,
-                )
-            )
+            self._imu_records.append(self._sample_record(sample))
             self._last_imu_timestamp_ns = sample.timestamp_ns
             self._imu_samples += 1
-
-        cam0_path = ""
-        cam1_path = ""
-        if int(frame_idx) % self.image_stride == 0:
-            if (
-                self._last_image_timestamp_ns is not None
-                and decoded.image_timestamp_ns <= self._last_image_timestamp_ns
-            ):
-                self._duplicate_image_timestamps += 1
-            else:
-                cam0_path, cam1_path = self._write_image_pair(
-                    decoded.image_timestamp_ns, left, right
-                )
-                self._last_image_timestamp_ns = decoded.image_timestamp_ns
-        self._frames_writer.writerow(
-            (
-                decoded.frame_idx,
-                decoded.image_timestamp_ns,
-                decoded.exp_start_ns,
-                decoded.exp_end_ns,
-                decoded.payload_bytes,
-                len(decoded.samples),
-                cam0_path,
-                cam1_path,
-            )
-        )
-        self._imu_handle.flush()
-        self._frames_handle.flush()
+        self._update_display()
 
     def stop(self, stopped_monotonic: Optional[float] = None) -> CaptureSummary:
         if self._state != "recording":
@@ -165,7 +135,8 @@ class KalibrRecorder:
             time.monotonic() if stopped_monotonic is None else float(stopped_monotonic)
         )
         self._state = "recorded"
-        self._close_files()
+        self._close_writers()
+        self._write_imu_json()
         summary = self._summary()
         self._write_metadata(complete=True, error=None, summary=summary)
         integrity = self._finalize_integrity(summary)
@@ -184,7 +155,8 @@ class KalibrRecorder:
         if self._state == "ready":
             self.dataset_dir.mkdir(parents=True, exist_ok=True)
         self._state = "error"
-        self._close_files()
+        self._close_writers()
+        self._write_imu_json()
         self._write_metadata(complete=False, error=self._error, summary=self._summary())
         self._write_manifest(complete=False, integrity_passed=False)
 
@@ -203,41 +175,57 @@ class KalibrRecorder:
             "decode_ratio": (
                 self._decoded_frames / self._total_frames if self._total_frames else 0.0
             ),
-            "left_images": self._left_images,
-            "right_images": self._right_images,
+            "left_frames": self._left_frames,
+            "right_frames": self._right_frames,
             "imu_samples": self._imu_samples,
+            "display_imu": list(self._display_imu),
             "error": self._error,
             "dataset_dir": str(self.dataset_dir),
             "manifest": str(self.dataset_dir / "dataset_manifest.json"),
         }
 
-    def _write_image_pair(
-        self, timestamp_ns: int, left: np.ndarray, right: np.ndarray
-    ) -> tuple[str, str]:
-        left_gray = self._gray(left)
-        right_gray = self._gray(right)
-        left_name = f"{timestamp_ns}.png"
-        right_name = f"{timestamp_ns}.png"
-        left_final = self.dataset_dir / "cam0" / left_name
-        right_final = self.dataset_dir / "cam1" / right_name
-        left_temp = self.dataset_dir / "cam0" / f".{timestamp_ns}.tmp.png"
-        right_temp = self.dataset_dir / "cam1" / f".{timestamp_ns}.tmp.png"
-        try:
-            if not cv2.imwrite(str(left_temp), left_gray):
-                raise RuntimeError("写入 Kalibr 左图失败")
-            if not cv2.imwrite(str(right_temp), right_gray):
-                raise RuntimeError("写入 Kalibr 右图失败")
-            left_temp.replace(left_final)
-            right_temp.replace(right_final)
-        except Exception:
-            left_temp.unlink(missing_ok=True)
-            right_temp.unlink(missing_ok=True)
-            left_final.unlink(missing_ok=True)
-            right_final.unlink(missing_ok=True)
-            raise
-        self._left_images += 1
-        self._right_images += 1
-        return f"cam0/{left_name}", f"cam1/{right_name}"
+    def _ensure_writers(self, frame: np.ndarray) -> None:
+        if self._cam0_writer is not None:
+            return
+        height, width = frame.shape[:2]
+        self._video_width = int(width)
+        self._video_height = int(height)
+        fourcc = cv2.VideoWriter_fourcc(*self._codec)
+        cam0_path = self.dataset_dir / f"cam0.{self._container}"
+        cam1_path = self.dataset_dir / f"cam1.{self._container}"
+        self._cam0_writer = cv2.VideoWriter(
+            str(cam0_path), fourcc, self._fps, (width, height),
+            isColor=not self._grayscale,
+        )
+        self._cam1_writer = cv2.VideoWriter(
+            str(cam1_path), fourcc, self._fps, (width, height),
+            isColor=not self._grayscale,
+        )
+        if not self._cam0_writer.isOpened() or not self._cam1_writer.isOpened():
+            raise RuntimeError("无法打开 Kalibr 视频写入器（codec/container 可能不受 OpenCV 支持）")
+        if self._codec == "MJPG":
+            self._cam0_writer.set(cv2.VIDEOWRITER_PROP_QUALITY, self._jpeg_quality)
+            self._cam1_writer.set(cv2.VIDEOWRITER_PROP_QUALITY, self._jpeg_quality)
+
+    def _update_display(self) -> None:
+        now = time.monotonic()
+        if (
+            self._last_display_monotonic is not None
+            and (now - self._last_display_monotonic) < self._display_interval_s
+        ):
+            return
+        self._last_display_monotonic = now
+        self._display_imu = list(self._imu_records[-self._display_samples:])
+
+    @staticmethod
+    def _sample_record(sample) -> dict:
+        return {
+            "timestamp_ns": sample.timestamp_ns,
+            "frame_idx": sample.frame_idx,
+            "t_us": sample.raw_t_us,
+            "gyro_rps": list(sample.gyro_rps),
+            "accel_mps2": list(sample.accel_mps2),
+        }
 
     @staticmethod
     def _gray(image: np.ndarray) -> np.ndarray:
@@ -255,19 +243,32 @@ class KalibrRecorder:
             duration_seconds=duration,
             total_frames=self._total_frames,
             decoded_frames=self._decoded_frames,
-            left_images=self._left_images,
-            right_images=self._right_images,
+            left_frames=self._left_frames,
+            right_frames=self._right_frames,
             imu_samples=self._imu_samples,
             decode_ratio=(
                 self._decoded_frames / self._total_frames if self._total_frames else 0.0
             ),
         )
 
-    def _close_files(self) -> None:
-        for handle in (self._imu_handle, self._frames_handle):
-            if handle is not None and not handle.closed:
-                handle.flush()
-                handle.close()
+    def _close_writers(self) -> None:
+        for writer in (self._cam0_writer, self._cam1_writer):
+            if writer is not None:
+                writer.release()
+        self._cam0_writer = None
+        self._cam1_writer = None
+
+    def _write_imu_json(self) -> None:
+        payload = {
+            "schema_version": 1,
+            "session_id": self.session_dir.name,
+            "image_width": self._video_width,
+            "image_height": self._video_height,
+            "fps": self._fps,
+            "codec": self._codec,
+            "samples": self._imu_records,
+        }
+        self._atomic_json(self.dataset_dir / "imu.json", payload)
 
     def _write_metadata(
         self, complete: bool, error: Optional[str], summary: CaptureSummary
@@ -281,7 +282,6 @@ class KalibrRecorder:
             "imu_samples": self._imu_samples,
             "magnetic_samples": self._magnetic_samples,
             "duplicate_imu_timestamps": self._duplicate_imu_timestamps,
-            "duplicate_image_timestamps": self._duplicate_image_timestamps,
         }
         self._atomic_json(self.dataset_dir / "capture.json", capture)
         self._atomic_json(self.dataset_dir / "decoder_stats.json", stats)
@@ -297,8 +297,8 @@ class KalibrRecorder:
             "complete": bool(complete),
             "integrity_passed": bool(integrity_passed),
             "required_artifacts": [
-                "capture.json", "decoder_stats.json", "imu0.csv", "frames.csv",
-                "cam0", "cam1", "integrity.json",
+                "imu.json", "capture.json", "decoder_stats.json",
+                f"cam0.{self._container}", f"cam1.{self._container}", "integrity.json",
             ],
             "startup": dict(self._startup_info),
         }
@@ -306,53 +306,42 @@ class KalibrRecorder:
 
     def _finalize_integrity(self, summary: CaptureSummary) -> dict[str, object]:
         reasons: list[str] = []
-        required_files = ("capture.json", "decoder_stats.json", "imu0.csv", "frames.csv")
-        missing = [name for name in required_files if not (self.dataset_dir / name).is_file()]
+        required_files = ("imu.json", "capture.json", "decoder_stats.json")
+        missing = [
+            name for name in required_files
+            if not (self.dataset_dir / name).is_file()
+        ]
         if missing:
             reasons.append("缺少必需产物：" + ", ".join(missing))
-        for name in ("cam0", "cam1"):
-            if not (self.dataset_dir / name).is_dir():
-                reasons.append(f"缺少图像目录：{name}")
-        left = {p.name for p in (self.dataset_dir / "cam0").glob("*.png")}
-        right = {p.name for p in (self.dataset_dir / "cam1").glob("*.png")}
-        if left != right:
-            reasons.append("左右图像文件不成对")
-        frame_rows = 0
-        referenced_missing = 0
+        for name in (f"cam0.{self._container}", f"cam1.{self._container}"):
+            path = self.dataset_dir / name
+            if not path.is_file() or path.stat().st_size == 0:
+                reasons.append(f"缺少或空视频文件：{name}")
+        sample_count = 0
         try:
-            with (self.dataset_dir / "frames.csv").open(newline="", encoding="utf-8") as handle:
-                for row in csv.DictReader(handle):
-                    frame_rows += 1
-                    for key in ("cam0_path", "cam1_path"):
-                        value = row.get(key, "")
-                        if value and not (self.dataset_dir / value).is_file():
-                            referenced_missing += 1
-        except (OSError, csv.Error):
-            reasons.append("frames.csv 无法读取")
-        if referenced_missing:
-            reasons.append(f"frames.csv 引用的图像不存在：{referenced_missing} 项")
-        # frames.csv represents successfully decoded frames only. Raw frames
-        # rejected by the IMU decoder are counted in total_frames and are
-        # reported separately through decode_ratio/decode_failures; comparing
-        # against total_frames falsely marks every recording with a decode
-        # miss as structurally corrupt.
-        if frame_rows != self._decoded_frames:
+            with (self.dataset_dir / "imu.json").open(encoding="utf-8") as handle:
+                imu = json.load(handle)
+            sample_count = len(imu.get("samples", []))
+        except (OSError, json.JSONDecodeError):
+            reasons.append("imu.json 无法解析")
+        if sample_count != self._imu_samples:
             reasons.append(
-                f"frames.csv 行数 {frame_rows} 与成功解码帧数 {self._decoded_frames} 不一致"
+                f"imu.json 样本数 {sample_count} 与记录 {self._imu_samples} 不一致"
             )
-        if summary.left_images != summary.right_images:
-            reasons.append("停止时左右图像计数不一致")
+        if summary.left_frames != summary.right_frames:
+            reasons.append("停止时左右帧计数不一致")
         report = {
             "passed": not reasons,
             "reasons": reasons,
             "dataset_dir": str(self.dataset_dir.resolve()),
-            "required_files": {name: (self.dataset_dir / name).is_file() for name in required_files},
-            "frame_rows": frame_rows,
+            "required_files": {
+                name: (self.dataset_dir / name).is_file() for name in required_files
+            },
             "total_frames": self._total_frames,
             "decoded_frames": self._decoded_frames,
-            "left_images": summary.left_images,
-            "right_images": summary.right_images,
-            "referenced_missing": referenced_missing,
+            "left_frames": summary.left_frames,
+            "right_frames": summary.right_frames,
+            "imu_samples": summary.imu_samples,
         }
         self._atomic_json(self.dataset_dir / "integrity.json", report)
         return report

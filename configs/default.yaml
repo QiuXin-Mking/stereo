@@ -12,15 +12,15 @@ capture:
   stable_seconds: 0.8
   preview_width_per_eye: 720
 kalibr:
-  minimum_duration_seconds: 60
-  recommended_duration_seconds: 90
-  image_stride: 3
-  minimum_decode_ratio: 0.90
-  allow_decode_ratio_override: true
-  minimum_decoded_frames: 300
-  minimum_imu_samples: 1000
-  minimum_imu_rate_hz: 250
-  maximum_imu_rate_hz: 400
+  video:
+    codec: MJPG
+    container: avi
+    grayscale: true
+    fps: 30
+    jpeg_quality: 95
+  display:
+    interval_s: 0.5
+    samples: 10
 quality:
   minimum_sharpness: 80.0
   maximum_clipped_ratio: 0.08

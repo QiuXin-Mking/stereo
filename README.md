@@ -1,6 +1,6 @@
 # stereo
 
-面向单设备左右拼接（SBS）双目相机的标定工具。RK3588 网页可选择 `OpenCV Chessboard`（双目相机）或 `Kalibr Camera+IMU`（双目相机与内置 IMU 联合标定）。Mac 只负责 SSH 隧道、浏览器和下载结果，采集与求解均在 RK3588 完成。
+面向单设备左右拼接（SBS）双目相机的标定工具。RK3588 网页可选择 `OpenCV Chessboard`（双目相机标定）或 `Kalibr Camera+IMU`（录制双目视频与 IMU 数据，供外部 Kalibr 求解）。Mac 只负责 SSH 隧道、浏览器和下载结果，采集与 OpenCV 求解在 RK3588 完成。
 
 第一次使用请先阅读：[标定工程零基础实用手册](docs/标定工程零基础实用手册.md)。
 
@@ -68,9 +68,7 @@ http://<RK3588-IP>:8765/
 
 `OpenCV Chessboard`：按页面提示手动或自动保存至少 20 对有效棋盘图，点击“开始求解”，系统会剔除无法检测角点的素材并输出 K1/K2、D1/D2、R/T、E/F、R1/R2、P1/P2、Q 和校正映射。
 
-`Kalibr Camera+IMU`：只适用于已识别为 `world intelligent` 且 160 px 码带解码正常的相机。依次点击“开始录制”，持续移动棋盘并绕相机 X/Y/Z 三轴转动 60–90 秒，再点击“停止录制”→“检查数据”→“开始 Kalibr 求解”。质量不通过时页面会保留素材并明确提示补拍原因；通过后可从页面下载 summary、camchain、IMU 配置和报告。
-
-Kalibr 使用固定提交 `1f60227442d25e36365ef5f72cd80b9666d73467` 的最小 ARM64 容器，RK3588 主机不安装 ROS。构建和导出方法见 [Kalibr 运行时说明](kalibr_runtime/README.md)。
+`Kalibr Camera+IMU`：只适用于已识别为 `world intelligent` 且 160 px 码带解码正常的相机。点击“开始录制”，持续移动棋盘并绕相机 X/Y/Z 三轴转动 60–90 秒，再点击“停止录制”。录制产物为左/右目灰度视频（`cam0.avi`、`cam1.avi`，不含码带）和 `imu.json`（IMU 样本），供外部 Kalibr 求解使用。本工程只负责协助录制，不执行 Kalibr 解算。
 
 若浏览器不能直接访问局域网地址，可建立 SSH 隧道：
 

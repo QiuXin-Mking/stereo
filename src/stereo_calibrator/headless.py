@@ -249,7 +249,7 @@ class HeadlessCalibrationEngine:
         result["kalibr"] = (
             self._kalibr_controller.snapshot()
             if self._kalibr_controller is not None
-            else {"state": "unavailable", "artifacts": {}}
+            else {"state": "unavailable"}
         )
         return result
 
@@ -261,7 +261,6 @@ class HeadlessCalibrationEngine:
         if name not in {
             "pause", "resume", "undo", "solve", "stop", "manual_capture", "auto_on", "auto_off",
             "mode_opencv", "mode_kalibr", "kalibr_start", "kalibr_stop",
-            "kalibr_validate", "kalibr_solve",
         }:
             return {"ok": False, "error": "不支持的操作"}
         if name in {"mode_opencv", "mode_kalibr"}:
@@ -336,11 +335,8 @@ class HeadlessCalibrationEngine:
                 return {"ok": False, "error": "求解进行中，不能切换模式"}
         if self._kalibr_controller is not None:
             kalibr_state = str(self._kalibr_controller.snapshot().get("state"))
-            if kalibr_state in {
-                "recording", "validating", "bagging",
-                "camera_calibrating", "imu_calibrating",
-            }:
-                return {"ok": False, "error": "Kalibr 任务进行中，不能切换模式"}
+            if kalibr_state == "recording":
+                return {"ok": False, "error": "Kalibr 录制进行中，不能切换模式"}
         self._workflow = target
         with self._lock:
             self._status.update(
@@ -352,16 +348,6 @@ class HeadlessCalibrationEngine:
                 ),
             )
         return {"ok": True}
-
-    def artifacts(self) -> dict[str, str]:
-        if self._kalibr_controller is None:
-            return {}
-        return self._kalibr_controller.artifacts()
-
-    def artifact_path(self, key: str) -> Path:
-        if self._kalibr_controller is None:
-            raise ValueError("非法产物")
-        return self._kalibr_controller.artifact_path(key)
 
     def _run(self) -> None:
         candidate_since: Optional[float] = None

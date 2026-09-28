@@ -1,2 +1,2 @@
-"""Kalibr camera/IMU capture and calibration support."""
+"""Kalibr camera/IMU video recording support."""
 

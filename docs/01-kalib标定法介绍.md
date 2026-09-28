@@ -1,6 +1,6 @@
 # Kalibr 标定法介绍
 
-> 本文介绍本项目中 `Kalibr Camera+IMU` 联合标定模式的输入、输出和基本原理。
+> 本文介绍本项目中 `Kalibr Camera+IMU` 模式的录制输入、输出和 Kalibr 基本原理。本工程只负责录制，Kalibr 求解在外部进行。
 > Kalibr 的官方名称是 **Kalibr**，项目文件名沿用用户侧的“kalib”叫法。
 
 ## 1. Kalibr 是什么
@@ -14,152 +14,62 @@ Kalibr 是 ETH Zurich Autonomous Systems Lab 开源的多传感器标定工具�
 - 双目相机与内置 IMU 之间的旋转、平移外参标定；
 - 根据图像和 IMU 的时间戳估计传感器之间的时间关系（具体是否启用由 Kalibr 命令参数决定）。
 
-本项目的 Kalibr 模式只适用于能够同时提供左右图像和内置 IMU 数据的 `world intelligent` 相机。Kalibr 在 ARM64 Docker 容器内运行，RK3588 主机不需要安装完整 ROS 环境。
+本项目的 Kalibr 模式只适用于能够同时提供左右图像和内置 IMU 数据的 `world intelligent` 相机。本工程只负责录制双目视频与 IMU 数据，Kalibr 求解（打 rosbag、相机/IMU 联合优化）在外部流程完成，RK3588 主机不运行 Kalibr 容器。
 
 官方参考：[Kalibr Camera-IMU Calibration](https://github.com/ethz-asl/kalibr/wiki/camera-imu-calibration)、[Kalibr YAML 格式](https://github.com/ethz-asl/kalibr/wiki/yaml-formats)。
 
 ## 2. 标定输入
 
-### 2.1 原始采集数据
+### 2.1 录制产物
 
-一次采集会保存到：
+一次录制会保存到：
 
 ```text
 sessions/<会话时间>/kalibr/
-├── cam0/                 # 左相机灰度图
-├── cam1/                 # 右相机灰度图
-├── imu0.csv              # IMU 原始测量值
-├── frames.csv            # 图像帧、时间戳和文件对应关系
+├── cam0.avi              # 左相机灰度视频（1920×1200，不含码带）
+├── cam1.avi              # 右相机灰度视频（1920×1200，不含码带）
+├── imu.json              # IMU 样本（时间戳、三轴陀螺、三轴加速度）
 ├── capture.json          # 采集统计信息
-└── decoder_stats.json    # 码带/IMU 解码统计信息
+├── decoder_stats.json    # 码带/IMU 解码统计信息
+├── dataset_manifest.json # 录制清单
+└── integrity.json        # 完整性报告
 ```
 
-| 输入 | 内容 | 作用 |
+| 产物 | 内容 | 作用 |
 |---|---|---|
-| `cam0/*.png` | 左相机灰度图 | 提取 AprilGrid 角点，估计左相机参数 |
-| `cam1/*.png` | 右相机灰度图 | 提取 AprilGrid 角点，估计右相机参数 |
-| `imu0.csv` | IMU 时间戳、角速度、线加速度 | 建立视觉运动与惯性运动的约束 |
-| `frames.csv` | 图像时间戳、曝光时间、左右图路径 | 将图像和 IMU 数据按时间关联 |
-| `capture.json` | 录制时长、图像数、IMU 样本数等 | 判断采集是否完整 |
+| `cam0.avi` / `cam1.avi` | 左右眼灰度视频（MJPEG 编码，不含码带） | 供外部 Kalibr 解帧提取 AprilGrid 角点 |
+| `imu.json` | IMU 时间戳、角速度、线加速度 | 建立视觉运动与惯性运动的约束 |
+| `capture.json` | 录制时长、帧数、IMU 样本数等 | 判断采集是否完整 |
 | `decoder_stats.json` | 解码率、重复时间戳等 | 判断 IMU 数据质量 |
 
-`imu0.csv` 的主要字段如下：
+`imu.json` 的样本字段（兼容 `imu_decoder.ImuSample`）：
 
 ```text
-timestamp_ns,omega_x,omega_y,omega_z,alpha_x,alpha_y,alpha_z,frame_idx,t_us
+timestamp_ns, frame_idx, t_us, gyro_rps[x,y,z], accel_mps2[x,y,z]
 ```
 
 - `timestamp_ns`：纳秒时间戳；
-- `omega_x/y/z`：陀螺仪角速度，单位为 `rad/s`；
-- `alpha_x/y/z`：加速度计测量值，单位为 `m/s²`；
+- `gyro_rps`：陀螺仪角速度，单位为 `rad/s`；
+- `accel_mps2`：加速度计测量值，单位为 `m/s²`；
 - `frame_idx`、`t_us`：设备帧号和原始设备时间，便于追溯。
 
-### 2.2 标定板配置 `target.yaml`
+### 2.2 外部 Kalibr 流程所需的其余输入
 
-本项目使用 AprilGrid，不使用 OpenCV 模式的普通棋盘格。当前配置为：
+AprilGrid 标定板配置（`target.yaml`）、IMU 噪声配置（`imu.yaml`）、相机链（`camchain.yaml`）以及 rosbag（`dataset.bag`）由外部 Kalibr 流程基于本工程录制的视频与 `imu.json` 准备，不在本工程内生成。
 
-```yaml
-target_type: aprilgrid
-tagCols: 8
-tagRows: 6
-tagSize: 0.020
-tagSpacing: 0.30
-```
-
-| 参数 | 含义 |
-|---|---|
-| `target_type` | 标定板类型，此处为 AprilGrid |
-| `tagCols` / `tagRows` | AprilTag 列数和行数，当前为 8×6 |
-| `tagSize` | 单个 Tag 边长，单位 m，当前为 20 mm |
-| `tagSpacing` | Tag 间距与 Tag 边长的比例，当前为 0.30 |
-
-标定板物理尺寸必须与配置一致，否则会影响平移外参和尺度结果。
-
-### 2.3 IMU 配置 `imu.yaml`
-
-项目会根据采集数据生成 IMU 配置，典型内容为：
-
-```yaml
-rostopic: /imu0
-update_rate: 300.0
-accelerometer_noise_density: 0.02
-accelerometer_random_walk: 0.002
-gyroscope_noise_density: 0.002
-gyroscope_random_walk: 0.0002
-provisional: true
-```
-
-实际 `update_rate` 由数据检查阶段估计。噪声密度和随机游走参数目前是项目的临时配置，`provisional: true` 表示它们不是通过专门的 IMU 静态噪声实验得到的最终参数。
-
-### 2.4 相机配置 `camchain.yaml`
-
-相机内参标定完成后，Kalibr 先生成双目相机链文件。该文件记录每个相机的：
-
-- 相机模型，项目当前为 `pinhole-radtan`；
-- 图像分辨率；
-- 相机内参 `fx、fy、cx、cy`；
-- 畸变参数；
-- 左右相机之间的相对外参。
-
-在相机-IMU 联合标定阶段，Kalibr 使用该文件作为相机参数输入。
-
-### 2.5 ROS bag 输入
-
-项目不会要求操作员手动准备 ROS bag。系统将上述目录中的文件转换为：
-
-```text
-results/dataset.bag
-```
-
-其中包含三个 ROS topic：
-
-```text
-/cam0/image_raw    # 左相机图像
-/cam1/image_raw    # 右相机图像
-/imu0              # IMU 数据
-```
-
-图像和 IMU 消息按纳秒时间戳排序后写入 bag，左右图像数量必须一致。
-
-## 3. 本项目的标定流程
+## 3. 本工程的录制流程
 
 ```text
 开始录制
     ↓
-移动并转动相机 60～90 秒
+移动并转动相机 60～90 秒（页面抽稀显示 IMU 数据）
     ↓
 停止录制
     ↓
-检查数据
-    ↓
-生成 target.yaml、imu.yaml、pipeline.json
-    ↓
-生成 dataset.bag
-    ↓
-Kalibr 相机内参/双目标定
-    ↓
-Kalibr 相机-IMU 联合标定
-    ↓
-生成报告和最终结果
+生成 cam0.avi、cam1.avi、imu.json
 ```
 
-当前项目使用的核心命令等价于：
-
-```bash
-kalibr_calibrate_cameras \
-  --bag results/dataset.bag \
-  --target target.yaml \
-  --models pinhole-radtan pinhole-radtan \
-  --topics /cam0/image_raw /cam1/image_raw
-
-kalibr_calibrate_imu_camera \
-  --bag results/dataset.bag \
-  --cams results/camchain.yaml \
-  --imu imu.yaml \
-  --target target.yaml
-```
-
-第一步先估计左右相机参数和双目关系，第二步在此基础上加入 IMU 数据，估计相机与 IMU 的空间关系。
+后续 Kalibr 求解（打 rosbag、相机内参/双目标定、相机-IMU 联合标定、生成报告）由外部流程完成。
 
 ## 4. Kalibr 的基本原理
 
@@ -225,65 +135,35 @@ Kalibr 标定的是相机和 IMU 的相对关系，因此必须让相机本体�
 
 ## 5. 输出结果
 
-标定数据位于：
+本工程录制产物位于：
 
 ```text
 sessions/<会话时间>/kalibr/
 ```
 
-### 5.1 配置与中间结果
-
 | 文件 | 说明 |
 |---|---|
-| `target.yaml` | AprilGrid 标定板配置 |
-| `imu.yaml` | IMU topic、频率、噪声密度和随机游走参数 |
-| `pipeline.json` | 本次求解使用的 topic、模型、标定板和质量指标 |
-| `results/dataset.bag` | 转换后的 ROS bag，包含左右图像和 IMU |
-| `results/bag_info.json` | bag 中各 topic 的消息数量和时间跨度 |
+| `cam0.avi` / `cam1.avi` | 左右眼灰度视频（不含码带） |
+| `imu.json` | IMU 样本 |
+| `capture.json` / `decoder_stats.json` | 采集与解码统计 |
+| `dataset_manifest.json` / `integrity.json` | 录制清单与完整性报告 |
 
-### 5.2 主要标定结果
+外部 Kalibr 求解的最终结果（`camchain.yaml`、`camchain-imucam.yaml`、PDF 报告等）由外部流程生成，不在本工程内。
 
-| 文件 | 内容 | 用途 |
-|---|---|---|
-| `results/camchain.yaml` | 左右相机内参、畸变和双目外参 | 相机模型和双目几何关系 |
-| `results/camchain-imucam.yaml` | 相机-IMU 联合标定结果 | 读取相机与 IMU 的旋转、平移及相关参数 |
-| `results/summary.json` | 结果摘要和关键统计量 | 程序读取、交付记录和快速检查 |
+## 6. 录制建议目标
 
-`camchain-imucam.yaml` 是相机-IMU 联合标定的核心结果，通常重点查看：
+本工程已移除内置求解与「检查数据」步骤，录制质量由操作者结合页面抽稀 IMU 显示自行判断。建议尽量满足：
 
-- 相机内参和畸变参数；
-- 左右相机之间的旋转和平移；
-- 相机相对于 IMU 的旋转和平移；
-- 重投影误差、样本数和优化状态；
-- 若启用时间标定，对应的时间偏移量。
-
-### 5.3 报告和日志
-
-| 文件 | 说明 |
-|---|---|
-| `results/dataset-report-cam.pdf` | 相机/双目标定报告，包含角点检测和重投影误差等信息 |
-| `results/dataset-report-imucam.pdf` | 相机-IMU 联合标定报告 |
-| `results/cameras.log` | 相机标定阶段的完整日志 |
-| `results/imu-camera.log` | 相机-IMU 标定阶段的完整日志 |
-| `validation.json` | 进入求解前的数据质量检查结果 |
-| `stage.json` | 当前求解阶段，如 `bagging`、`camera_calibrating`、`imu_calibrating`、`pass` 或 `error` |
-
-## 6. 求解前的数据质量要求
-
-本项目在开始 Kalibr 求解前会检查：
-
-| 检查项 | 当前要求 |
+| 项目 | 建议目标 |
 |---|---:|
 | 录制时长 | 至少 60 秒，推荐 90 秒 |
 | IMU 采样率 | 250～400 Hz |
 | IMU 码带解码成功率 | 至少 90% |
 | 陀螺仪三轴激励 | 每轴峰峰值至少 0.35 rad/s |
 | 加速度计三轴激励 | 每轴峰峰值至少 1.5 m/s² |
-| 左右图像 | 数量一致、时间戳单调 |
+| 左右视频帧 | 数量一致、时间戳单调 |
 | 双眼同时检测到标定板 | 至少 60 帧 |
 | 视场覆盖 | 3×3 区域至少覆盖 5 个区域 |
-
-质量检查不通过时，不应直接运行求解。应根据提示重新录制，例如补充某一轴的转动、增加平移、改善 AprilGrid 可见性或检查 IMU 解码。
 
 ## 7. 与 OpenCV Chessboard 标定的区别
 

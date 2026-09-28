@@ -51,8 +51,6 @@ class FakeKalibrController:
         transitions = {
             "kalibr_start": "recording",
             "kalibr_stop": "recorded",
-            "kalibr_validate": "ready_to_solve",
-            "kalibr_solve": "bagging",
         }
         if name not in transitions:
             return {"ok": False, "error": "bad action"}
@@ -68,9 +66,6 @@ class FakeKalibrController:
 
     def snapshot(self):
         return {"state": self.state, "total_frames": self.ingested_frames}
-
-    def artifacts(self):
-        return {}
 
 
 def make_config():
@@ -109,7 +104,7 @@ def test_solve_is_rejected_below_twenty_pairs(tmp_path):
 
 def test_kalibr_mode_is_rejected_for_generic_camera(tmp_path):
     config = make_config()
-    config["kalibr"] = {"image_stride": 3}
+    config["kalibr"] = {}
     engine = HeadlessCalibrationEngine(
         config, tmp_path, 0.020, "/dev/video0", camera=FakeCamera(),
         kalibr_controller=FakeKalibrController(),

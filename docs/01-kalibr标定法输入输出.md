@@ -4,7 +4,7 @@
 
 这是本项目（`stereo_chessboard_calibrator`）里区别于 OpenCV 棋盘模式的**第二条标定链路**：标定对象不再是「左右两个镜头之间的关系」，而是**相机和内置 IMU 之间的外参（旋转 + 平移）以及两者的时间偏移**。它只对带 IMU 码带的 `world intelligent` 相机（4000×1200，左 160px 码带）开放。
 
-> 底层用的是 ETH Zürich ASL 的开源工具箱 **Kalibr**，工程里用固定提交 `1f602274…`，在 RK3588 的隔离 ARM64 Docker 容器内离线运行，主机不装 ROS。
+> 底层用的是 ETH Zürich ASL 的开源工具箱 **Kalibr**。本工程只负责**录制**双目视频与 IMU 数据，Kalibr 求解（打 rosbag、相机/IMU 联合优化）在外部流程完成，RK3588 主机不再运行 Kalibr Docker 容器。
 
 ---
 
@@ -21,23 +21,20 @@
 | tag 边长 | 20 mm（`tagSize: 0.020`） |
 | 间距 | 边长 × 0.3（`tagSpacing: 0.30`） |
 
-对应 `config_writer.py` 里写出的 `target.yaml`。
+对应外部 Kalibr 流程准备的 `target.yaml`（本工程不再生成标定板配置）。
 
-### 2. 视觉数据（双目图像序列）
+### 2. 视觉数据（双目视频）
 
-录制时按 `image_stride` 抽帧，写入容器内对应的 topic：
+录制时以相机原生帧率把左右眼分别写为视频（不抽帧）：
 
-- `/cam0/image_raw` — 左眼灰度图（`kalibr/cam0/`）
-- `/cam1/image_raw` — 右眼灰度图（`kalibr/cam1/`）
-- 相机模型声明为 `pinhole-radtan`（针孔 + 径向/切向畸变）
+- `cam0.avi` — 左眼灰度视频（1920×1200，不含 160px 码带）
+- `cam1.avi` — 右眼灰度视频（1920×1200，不含码带）
+- 编码为 MJPEG（帧内编码）；后续由外部流程解帧供 Kalibr 使用
 
 ### 3. IMU 数据
 
-- `imu_decoder.py` 从画面左侧 160px 码带里解码出 IMU 样本，写 `imu0.csv`，对应 topic `/imu0`
+- `imu_decoder.py` 从画面左侧 160px 码带里解码出 IMU 样本，写 `imu.json`（时间戳 + 三轴陀螺 + 三轴加速度）
 - IMU 采样率要求 **250–400 Hz**
-- IMU 配置（`imu.yaml`）里的噪声参数是**预估/临时的**（`provisional: True`）：
-  - 加速度计：噪声密度 0.02、随机游走 0.002
-  - 陀螺仪：噪声密度 0.002、随机游走 0.0002
 
 ### 4. 采集动作要求（关键）
 
@@ -57,18 +54,16 @@
 
 ## 二、输出（Output）
 
-求解在容器内分阶段跑完（`bagging → camera_calibrating → imu_calibrating`），产物落在 `sessions/<时间>/kalibr/results/`：
+录制产物落在 `sessions/<时间>/kalibr/`：
 
 | 产物 | 含义 |
 |---|---|
-| `dataset.bag` | 打包后的 rosbag（图像 + IMU 带时间戳） |
-| `camchain.yaml` | **相机链**：双目的内参、畸变、双目外参 T_c1_c0 |
-| `camchain-imucam.yaml` | **相机–IMU 外参**：T_cam_imu（旋转 + 平移），这是联合标定的核心结果 |
-| IMU 配置 | 标定后的 IMU 噪声/游走参数 |
-| 报告（PDF）+ 日志 | 残差曲线、重投影误差、IMU 误差等可视化 |
-| `summary.json` | 结构化摘要，供页面/程序读取 |
+| `cam0.avi` | 左眼灰度视频（不含码带） |
+| `cam1.avi` | 右眼灰度视频（不含码带） |
+| `imu.json` | IMU 样本（时间戳、三轴陀螺、三轴加速度） |
+| `capture.json` / `decoder_stats.json` / `dataset_manifest.json` / `integrity.json` | 录制元数据与完整性报告 |
 
-页面可下载的是：`summary`、`camchain`（相机–IMU 外参）、IMU 配置、报告。
+Kalibr 求解（打 rosbag、相机/IMU 联合优化）由外部流程基于上述视频与 `imu.json` 完成，不在本工程内。
 
 ---
 
@@ -101,7 +96,7 @@ Kalibr 的相机–IMU 标定基于**连续时间批量估计（continuous-time 
 
 ### 4. 分两个阶段
 
-工程里的 `camera_calibrating → imu_calibrating` 对应 Kalibr 的两步：
+（外部流程中的）Kalibr 求解分两步：
 
 1. **先标相机**（`kalibr_calibrate_cameras`）：用 AprilTag 板求双目各自的内参/畸变和双目外参，产出 `camchain.yaml`。
 2. **再联合标定**（`kalibr_calibrate_imu_camera`）：以第 1 步的相机链为初值，联合 IMU 数据解 `T_cam_imu` + 时间偏移，产出 `camchain-imucam.yaml`。
@@ -110,4 +105,4 @@ Kalibr 的相机–IMU 标定基于**连续时间批量估计（continuous-time 
 
 ## 一句话总结
 
-输入是「AprilTag 板 + 双目图像序列 + 码带解码出的 IMU 数据 + 充分激励的相机运动」，输出是「相机链 + 相机–IMU 外参与时间偏移」，原理是用连续时间批量估计把视觉位姿轨迹和 IMU 积分轨迹对齐，解出固定外参与时钟差。
+本工程负责录制「AprilTag 板 + 双目视频 + 码带解码出的 IMU 数据 + 充分激励的相机运动」，输出左/右目视频与 `imu.json`；后续 Kalibr 用连续时间批量估计把视觉位姿轨迹和 IMU 积分轨迹对齐，解出相机–IMU 外参与时间偏移（求解在外部进行）。
