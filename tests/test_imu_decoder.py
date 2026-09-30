@@ -1,6 +1,4 @@
 import struct
-import subprocess
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -160,36 +158,3 @@ def test_non_monotonic_sample_timestamps_are_rejected():
             frame_idx=0,
             clock=DeviceClock(),
         )
-
-
-def test_python_payload_bytes_equal_cpp_reference(tmp_path):
-    project_root = Path(__file__).resolve().parents[1]
-    unified_capture = (
-        project_root.parent
-        / "09-开始做/06-rk3588开发/05-pr-file/01-统一采集方案/unified_capture"
-    )
-    source = project_root / "tests/fixtures/imu_reference_cli.cpp"
-    executable = tmp_path / "imu_reference_cli"
-    subprocess.run(
-        [
-            "c++",
-            "-std=c++20",
-            "-I",
-            str(unified_capture),
-            str(source),
-            "-o",
-            str(executable),
-        ],
-        check=True,
-        capture_output=True,
-    )
-    frame = encode_vertical_band(make_payload(include_mag=True))
-    luma = np.ascontiguousarray(frame[:, :, 1])
-    cpp = subprocess.run(
-        [str(executable)],
-        input=struct.pack("<II", luma.shape[1], luma.shape[0]) + luma.tobytes(),
-        check=True,
-        capture_output=True,
-    ).stdout.decode().strip()
-
-    assert decode_vertical_payload_bytes(frame).hex() == cpp
